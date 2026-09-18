@@ -1,0 +1,97 @@
+WELCOME TO SCRIPTLINER - DAY
+
+ScriptLiner is a program made by filmmakers for filmmakers. It allows you
+to easily line your scripts.
+
+GETTING STARTED
+
+Start a new project. Import a screenplay formatted file (.fadein, .fdx,
+.fountain, .rtf) which is recommended. The program cannot open a PDF or a
+Movie Magic (.mmx) file yet - those are still coming soon. Importing one
+of the formats above gives ScriptLiner real scene numbers and page
+structure to work with, instead of guessing.
+
+THE PAGE - CONTINUOUS
+
+Your script shows up on the page exactly as imported, but it's read-only.
+You don't type into it. Everything you do here is done by selecting text
+and building shots from it.
+
+LINING A SHOT
+
+Highlight the lines a shot covers, then hit N (or right-click the
+selection and choose New Shot). ScriptLiner numbers it automatically -
+12, 12A, 12B - and draws a colored line down the margin next to the text
+it covers.
+
+Click a shot's line, or pick it from the Shots list, and the Inspector
+opens on the right. That's where you set the real details: Shot Number,
+Camera Letter, Shot Type (Wide, Medium, Close-Up, Extreme Close-Up,
+Two-Shot, OTS, POV, Insert), Lens, Camera Movement, Line Style, and
+Description/Notes.
+
+LANES
+
+Every shot lives in one of up to six numbered lanes running down the
+margin. Overlapping shots pack themselves left to right into open lanes
+automatically. If you want more control, hit S for Move Shots and drag
+any line into the lane you want. Turn on "Shots in Alphabetical Order" in
+Settings and ScriptLiner sorts overlapping shots by scene/camera letter
+for you instead - dragging is disabled while that's on.
+
+DUPLICATE, MOVE, DELETE
+
+D duplicates the selected shot - pick which fields carry over, then drag
+the new shot into place on the page and confirm. Q lets you re-drag an
+existing shot's start, end, or lane without duplicating it. Select a shot
+and hit Delete to remove it.
+
+CTRL+Z UNDOES SHOT WORK - DAY
+
+Undo and Redo (Ctrl+Z / Ctrl+Y) cover shot changes - creating, editing,
+deleting, moving. They do not touch the script text, because you can't
+edit the script text directly in the first place.
+
+SETTINGS
+
+Ctrl+, opens Settings. This is where you map Shot Types to Line Styles,
+turn the on-page Key legend on or off and choose where it sits, pick
+Light or Dark Mode (exported PDFs always print light, no matter what),
+choose which lanes are active, set your six shot colors, and rebind every
+keyboard shortcut in the program.
+
+EXPORTING
+
+Ctrl+E exports the fully lined script as a PDF - shot lines, scene
+numbers, page numbers, and the Key if you've turned it on. This is the
+version you hand to your crew.
+
+UPDATING A SCRIPT - LATER
+
+Got a new draft? Use Update Script to import the revision. ScriptLiner
+compares old and new automatically and slides any shot that's still in
+an unchanged block of text onto the new pages for you. Anything sitting
+in a changed section gets flagged "Needs Placement" - drag it into its
+new spot before confirming, or it gets dropped (you'll be warned first).
+
+Merge Projects works the same way, except it pulls shots in from another
+ScriptLiner project file without touching your current script or shots
+at all.
+
+SAVING YOUR WORK
+
+Ctrl+S saves, Ctrl+Shift+S saves a copy. ScriptLiner also autosaves every
+30 seconds and reopens your last project automatically the next time you
+launch it, so you're never starting from zero.
+
+IF SOMETHING'S BROKEN, OR YOU'VE GOT AN IDEA - ANYTIME
+
+Help > Send Feedback opens a short form. Bug, feature idea, or just a
+thought - that's where it goes.
+
+THAT'S THE WHOLE SHOW - DAY
+
+Import your script, select some lines, hit N, and you're lining. Every
+other panel in this program only exists to make step three faster.
+
+FADE OUT.

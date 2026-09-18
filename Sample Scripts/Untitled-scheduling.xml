@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="Open Scheduling Export Format" version="1">
+  <info title="TITLE" uuid="e967aeb3-3743-404d-a528-f410d805d84e" pagecount="2"/>
+  <scenes>
+    <scene scene_heading="WELCOME TO SCRIPTLINER - DAY " length_eighths="1" length_time="1:00"/>
+    <scene scene_heading="SCENE 2 - DAY" length_eighths="4/8" length_time="0:30"/>
+  </scenes>
+  <tag_categories>
+    <tag_category name="Cast" color="#0000FF" uuid="8f6683ce-091e-4bdf-8328-ffb77e533f72" show="true"/>
+    <tag_category name="Background Actors" color="#00BFFF" uuid="9f77c0ce-f451-4f56-a07a-38207ff112ef" show="true"/>
+    <tag_category name="Stunts" color="#FFA500" uuid="9ae4b95f-f5b0-4f13-9ba5-f131db00665a" show="true"/>
+    <tag_category name="Vehicles" color="#8B0000" uuid="7b4a0c59-cf8d-45c5-b8e2-1021c12b12df" show="true"/>
+    <tag_category name="Props" color="#FF0000" uuid="3673492a-664a-44e5-a981-0a8fcffdf1b3" show="true"/>
+    <tag_category name="Camera" color="#CCFF00" uuid="a4ee63ed-8113-4d04-8950-cb24eebe74e2" show="true"/>
+    <tag_category name="Special Effects" color="#1E90FF" uuid="96ccbf08-5282-4741-9526-1f87c4507a65" show="true"/>
+    <tag_category name="Wardrobe" color="#800080" uuid="4695e56a-4a44-47ff-b668-561b6b26e62f" show="true"/>
+    <tag_category name="Makeup/Hair" color="#9370DB" uuid="cc593c50-ae61-430c-aa7b-9c23aabf5ae3" show="true"/>
+    <tag_category name="Animals" color="#CD853F" uuid="b276f264-f116-4a71-8019-e27ac7ae1a11" show="true"/>
+    <tag_category name="Animal Handler" color="#8B4513" uuid="c2ba2979-3743-4fca-b14b-5611ba97f530" show="true"/>
+    <tag_category name="Music" color="#20B2AA" uuid="f9aa25cf-15e6-43a2-8e04-45402779a727" show="true"/>
+    <tag_category name="Sound" color="#008080" uuid="a9edf2a3-1d71-45e0-99f8-a63e14f537c9" show="true"/>
+    <tag_category name="Set Dressing" color="#BA55D3" uuid="3d304168-5ab9-4ad0-b469-7001e7b96801" show="true"/>
+    <tag_category name="Greenery" color="#008000" uuid="9bb2bebb-ba87-40ba-81de-c842790ee9f4" show="true"/>
+    <tag_category name="Special Equipment" color="#BDB76B" uuid="7159c037-31a7-41ed-a948-b194b3f9be43" show="true"/>
+    <tag_category name="Security" color="#DAA520" uuid="d1d1f295-d2bb-4bae-a846-ba71c5e5a9d2" show="true"/>
+    <tag_category name="Additional Labor" color="#B8860B" uuid="80877b70-58d0-4881-96e1-b7aa1c7f1baf" show="true"/>
+    <tag_category name="Visual Effects" color="#32CD32" uuid="73f112c5-ebf6-483e-927e-4c21d3cf9ff1" show="true"/>
+    <tag_category name="Mechanical Effects" color="#B22222" uuid="076f2f4a-5d2e-40f6-9d18-74811de445b0" show="true"/>
+    <tag_category name="Miscellaneous" color="#708090" uuid="0c28a847-5584-4d57-9cdb-deb242c351a0" show="true"/>
+    <tag_category name="Notes" color="#FFD700" uuid="67605ea1-853a-4634-99e3-e870d54ac813" show="true"/>
+  </tag_categories>
+</document>

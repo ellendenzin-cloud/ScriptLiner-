@@ -1,0 +1,56 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "assets/**"
+      - "Sample Scripts/**"
+      - "main.py"
+      - "requirements.txt"
+      - "ScriptLiner_mac.spec"
+      - ".github/workflows/build-mac.yml"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build .icns from the existing PNG logo
+        run: |
+          mkdir -p icon.iconset
+          sips -z 16 16     assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_16x16.png
+          sips -z 32 32     assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_32x32.png
+          sips -z 64 64     assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_128x128.png
+          sips -z 256 256   assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_256x256.png
+          sips -z 512 512   assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   assets/ScriptLinerLogo_Square.png --out icon.iconset/icon_512x512.png
+          cp assets/ScriptLinerLogo_Square.png icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icon.iconset -o assets/ScriptLinerLogo_Square.icns
+
+      - name: Build the .app with PyInstaller
+        run: pyinstaller ScriptLiner_mac.spec --noconfirm
+
+      - name: Package as a .dmg
+        run: |
+          hdiutil create -volname ScriptLiner -srcfolder dist/ScriptLiner.app -ov -format UDZO dist/ScriptLiner.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScriptLiner-macOS
+          path: dist/ScriptLiner.dmg

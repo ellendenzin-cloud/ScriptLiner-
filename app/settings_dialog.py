@@ -33,7 +33,7 @@ from app.window import (
     MAX_LANES,
     MAX_PALETTE_COLORS,
     DEFAULT_OVERLAY_OPACITY,
-    _generated_color,
+    SHOT_COLORS,
 )
 
 
@@ -345,8 +345,9 @@ class SettingsDialog(QDialog):
         self._rebuild_color_buttons()
 
         self.unique_colors_check = QCheckBox(
-            "Give every new shot its own new color\n"
-            "(uses the colors above first, then makes up more so no two shots match)"
+            "Give every new shot its own color\n"
+            "(uses 30 built-in colors picked to be very different from each other and "
+            "to show up on a white page - after all 30 are in use, the least-used one repeats)"
         )
         self.unique_colors_check.setChecked(getattr(window, "unique_shot_colors", False))
         color_outer.addWidget(self.unique_colors_check)
@@ -538,15 +539,14 @@ class SettingsDialog(QDialog):
             self._color_grid.addWidget(btn, i // 6, i % 6)
 
     def _on_color_count_changed(self, count):
-        """Grows or shrinks the palette. New slots start as a generated
-        color that isn't already in it, ready to be recolored."""
+        """Grows or shrinks the palette. New slots start as the next of the
+        built-in distinct colors not already in it, ready to be recolored."""
         taken = {c.lower() for c in self._colors}
-        n = 0
-        while len(self._colors) < count:
-            candidate = _generated_color(n)
-            n += 1
-            if candidate.lower() not in taken:
-                taken.add(candidate.lower())
+        for candidate in SHOT_COLORS:
+            if len(self._colors) >= count:
+                break
+            if candidate not in taken:
+                taken.add(candidate)
                 self._colors.append(candidate)
         del self._colors[count:]
         self._rebuild_color_buttons()

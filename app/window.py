@@ -898,20 +898,51 @@ def _draw_tick_mark(painter, x, y, size, shape):
     painter.restore()
 
 
-MAX_PALETTE_COLORS = 24
+MAX_PALETTE_COLORS = 30
 DEFAULT_OVERLAY_OPACITY = 40
 
-
-def _generated_color(n):
-    """The n-th automatically generated shot color. Hues step by the golden
-    angle, so any run of consecutive colors is spread around the wheel
-    (never two similar ones in a row), and saturation/brightness rotate
-    through three tiers so even a long run stays distinguishable. Used
-    once the palette's own colors are all taken, when "every shot gets
-    its own new color" is on."""
-    hue = (n * 0.6180339887498949) % 1.0
-    saturation, value = ((0.78, 0.88), (0.62, 0.97), (0.92, 0.72))[n % 3]
-    return QColor.fromHsvF(hue, saturation, value).name()
+# The colors "give every new shot its own color" hands out, in this order.
+# Fixed rather than generated: random/computed colors drift into near-
+# duplicates, so these 30 were picked to be as different from one another
+# as possible while ALL staying readable on a white page (each has at
+# least 3:1 contrast against white - so no pale yellows or cyans - and
+# none is so dark it gets mistaken for the script's black text). The
+# first few are the most mutually distinct, so a short script gets the
+# clearest set. Aqua, Brass and Burnt Sienna are slightly darker than
+# their textbook values for exactly that white-page reason.
+SHOT_COLOR_SET = [
+    ("Aqua", "#00a3a3"),
+    ("Blue", "#0000ff"),
+    ("Jade", "#00a36c"),
+    ("Brass", "#a68f51"),
+    ("Brown", "#a52a2a"),
+    ("Burnt Sienna", "#e4724f"),
+    ("Olive Green", "#808000"),
+    ("Cerise", "#de3163"),
+    ("Azure", "#0085fa"),
+    ("Electric Orchid", "#e229ff"),
+    ("Forest Green", "#165a28"),
+    ("Plum", "#732b64"),
+    ("Umber", "#704910"),
+    ("Sapphire", "#085496"),
+    ("Periwinkle", "#7764c4"),
+    ("Amber", "#b36409"),
+    ("Apple Green", "#5ca509"),
+    ("Grape", "#a400bd"),
+    ("Mauve", "#c464a4"),
+    ("Moss", "#555a16"),
+    ("Green", "#008000"),
+    ("Red", "#eb0000"),
+    ("Indigo", "#573894"),
+    ("Raspberry", "#bd007e"),
+    ("Burgundy", "#960841"),
+    ("Emerald", "#127d59"),
+    ("Sky Blue", "#0b9cd0"),
+    ("Sienna", "#aa5d41"),
+    ("Royal Blue", "#0053fa"),
+    ("Rust", "#802a00"),
+]
+SHOT_COLORS = [hex_color for _name, hex_color in SHOT_COLOR_SET]
 
 
 def _shot_line_x(shot, lane, lane_start_x, lane_width, max_lanes, text_left_x):
@@ -3953,21 +3984,15 @@ class MainWindow(QMainWindow):
     def _next_shot_color(self, extra_used=()):
         """The color for a newly created shot. Normally the palette cycles
         in creation order. With "every shot gets its own new color" on,
-        it's the first palette color no shot is using, then generated
-        colors (see _generated_color) once the palette runs out - so no
-        two shots ever share one."""
+        it's the first color in SHOT_COLORS that nothing is using - so no
+        two shots share one until all 30 are taken, after which the
+        least-used color repeats (earliest first)."""
         if not self.unique_shot_colors:
             return self.colors[len(self.shots) % len(self.colors)]
-        used = {c.lower() for c in extra_used} | {s.color.lower() for s in self.shots}
-        for color in self.colors:
-            if color.lower() not in used:
-                return color
-        n = 0
-        while True:
-            color = _generated_color(n)
-            if color.lower() not in used:
-                return color
-            n += 1
+        uses = {}
+        for color in list(extra_used) + [s.color for s in self.shots]:
+            uses[color.lower()] = uses.get(color.lower(), 0) + 1
+        return min(SHOT_COLORS, key=lambda c: (uses.get(c, 0), SHOT_COLORS.index(c)))
 
     def _shape_for_color(self, color: str) -> str:
         """The tick-mark shape paired with `color` by shared index into
@@ -3976,13 +4001,16 @@ class MainWindow(QMainWindow):
         order or by camera letter) without a second parallel counter.
         Falls back to the first shape for a color that isn't one of the
         current palette entries (e.g. a custom/edited color)."""
-        try:
+        if color in self.colors:
             index = self.colors.index(color)
-        except ValueError:
-            # A generated color (see _generated_color) or an old custom
-            # one - still deterministic, so a shot keeps its shape.
+        elif color.lower() in SHOT_COLORS:
+            # One of the fixed "every shot its own color" colors - its
+            # position in that list, so consecutive shots get different
+            # shapes too.
+            index = SHOT_COLORS.index(color.lower())
+        else:
             try:
-                index = int(color.lstrip("#"), 16)
+                index = int(color.lstrip("#"), 16)  # an old custom color - still deterministic
             except ValueError:
                 index = 0
         return TICK_SHAPES[index % len(TICK_SHAPES)]

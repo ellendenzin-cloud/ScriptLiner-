@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -57,6 +58,49 @@ class UpdateError(Exception):
     pass
 
 
+def _ssl_contexts():
+    """Certificate sources to try, best first. A packaged Python app has
+    no certificate store of its own, so connecting to GitHub fails with
+    CERTIFICATE_VERIFY_FAILED unless one is supplied: the bundled certifi
+    list first, then the system default, then macOS's own /etc/ssl/cert.pem
+    (which every Mac has). Any one working is enough."""
+    contexts = []
+    try:
+        import certifi
+
+        contexts.append(ssl.create_default_context(cafile=certifi.where()))
+    except Exception:
+        pass
+    contexts.append(ssl.create_default_context())
+    if os.path.exists("/etc/ssl/cert.pem"):
+        try:
+            contexts.append(ssl.create_default_context(cafile="/etc/ssl/cert.pem"))
+        except Exception:
+            pass
+    return contexts
+
+
+def _open_url(request, timeout):
+    """urlopen that retries with each certificate source (see
+    _ssl_contexts) when - and only when - the failure is a certificate
+    one; any other error (404, no network, ...) is raised straight away."""
+    last_error = None
+    for context in _ssl_contexts():
+        try:
+            return urllib.request.urlopen(request, timeout=timeout, context=context)
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLError):
+                last_error = exc
+                continue
+            raise
+        except ssl.SSLError as exc:
+            last_error = exc
+            continue
+    raise last_error
+
+
 @dataclass
 class ReleaseInfo:
     version: str
@@ -96,6 +140,17 @@ def _release_from_json(data: dict) -> ReleaseInfo:
     )
 
 
+def _describe_network_error(prefix, exc):
+    """A readable one-liner that says what kind of failure it was."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError):
+        return (f"{prefix}: this computer couldn't verify GitHub's secure connection "
+                f"(certificate problem: {reason}).")
+    if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+        return f"{prefix}: the connection timed out - check your internet connection."
+    return f"{prefix}: {reason}"
+
+
 def fetch_latest_release(timeout: float = 8.0) -> Optional[ReleaseInfo]:
     """The newest published release, or None if there isn't one yet.
     Raises UpdateError when GitHub can't be reached or answers oddly."""
@@ -104,21 +159,21 @@ def fetch_latest_release(timeout: float = 8.0) -> Optional[ReleaseInfo]:
         headers={"Accept": "application/vnd.github+json", "User-Agent": _USER_AGENT},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_url(request, timeout) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
         raise UpdateError(f"GitHub answered with an error ({exc.code}).")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-        raise UpdateError(f"Couldn't reach GitHub: {exc}")
+        raise UpdateError(_describe_network_error("Couldn't reach GitHub", exc))
     return _release_from_json(data)
 
 
 def download_file(url, dest, progress=None, is_cancelled=None, chunk_size=256 * 1024):
     request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout=30) as response, open(dest, "wb") as out:
+        with _open_url(request, 30) as response, open(dest, "wb") as out:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0
             while True:
@@ -132,7 +187,7 @@ def download_file(url, dest, progress=None, is_cancelled=None, chunk_size=256 * 
                 if progress:
                     progress(done, total)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise UpdateError(f"Download failed: {exc}")
+        raise UpdateError(_describe_network_error("Download failed", exc))
 
 
 def current_app_bundle() -> Optional[Path]:

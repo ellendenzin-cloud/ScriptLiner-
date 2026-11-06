@@ -11,6 +11,19 @@ from app.terms_dialog import TermsDialog
 from app.version import APP_VERSION
 from app.theme import load_fonts, enable_dpi_awareness
 
+if "--check-update" in sys.argv:
+    # Headless self-test of the in-app updater's network path - the Mac
+    # build workflow runs the packaged app with this flag, so a build
+    # whose certificates can't reach GitHub never gets published.
+    from app import updater
+
+    try:
+        latest = updater.fetch_latest_release()
+    except updater.UpdateError as exc:
+        print(f"update-check failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"update-check ok: latest={latest.version if latest else 'none'}")
+    sys.exit(0)
 
 # Must happen before QApplication is constructed - see theme.py docstring
 # for why this can't just be left to Qt's own high-DPI scaling.

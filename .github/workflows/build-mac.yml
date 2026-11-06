@@ -61,6 +61,16 @@ jobs:
       - name: Build the .app with PyInstaller
         run: pyinstaller ScriptLiner_mac.spec --noconfirm
 
+      - name: Check the certificate bundle made it into the app
+        run: |
+          find dist/ScriptLiner.app -name cacert.pem | grep -q . || { echo "certifi's cacert.pem is missing from the app"; exit 1; }
+
+      - name: Smoke-test the packaged app's update check
+        run: |
+          OUT=$(dist/ScriptLiner.app/Contents/MacOS/ScriptLiner --check-update 2>&1) || { echo "$OUT"; exit 1; }
+          echo "$OUT"
+          echo "$OUT" | grep -q "update-check ok"
+
       - name: Package as a .dmg
         run: |
           hdiutil create -volname ScriptLiner -srcfolder dist/ScriptLiner.app -ov -format UDZO dist/ScriptLiner.dmg

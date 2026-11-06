@@ -98,6 +98,40 @@ BASE_FONT_POINT_SIZE = 12
 BASE_FONT_PX = BASE_FONT_POINT_SIZE * PX_PER_INCH / 72
 
 
+# Standard screenplay format is 12pt Courier at exactly 6 lines per inch -
+# a 12pt pitch, 54 lines in the 9 inches of text on a page. Left to its own
+# metrics Courier New is 13.6pt tall per line, which gave about 47 lines a
+# page and so ~13% more pages than any other screenwriting software.
+SCRIPT_LINE_PITCH_PT = 12.0
+
+
+def _set_script_line_height(block_fmt, px_per_inch):
+    block_fmt.setLineHeight(SCRIPT_LINE_PITCH_PT / 72.0 * px_per_inch, QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+
+
+def _fixed_line_pitch(block):
+    """The block's fixed line pitch in pixels, or None if it has none."""
+    fmt = block.blockFormat()
+    if fmt.lineHeight() > 0 and fmt.lineHeightType() == QTextBlockFormat.LineHeightTypes.FixedHeight.value:
+        return fmt.lineHeight()
+    return None
+
+
+def _flow_bottom(doc, block):
+    """Where a block's text really ends in the flow of the page. With a
+    fixed line height, Qt still reports each line - and so the block's
+    bounding rect - as the font's natural height (13.6pt for Courier New)
+    even though lines advance by the fixed pitch (12pt), so the last line
+    of every paragraph overshoots its slot by the difference. Judging a
+    page's fit by that overshoot made it hold 53 lines instead of 54."""
+    rect = doc.documentLayout().blockBoundingRect(block)
+    pitch = _fixed_line_pitch(block)
+    layout = block.layout()
+    if pitch is None or layout is None or layout.lineCount() == 0:
+        return rect.bottom()
+    return rect.top() + layout.lineCount() * pitch
+
+
 def _points_for_pixels(pixels):
     """The QFont point size that makes a QTextDocument render text exactly
     `pixels` tall. A document turns a font's points into pixels using the
@@ -543,13 +577,16 @@ LINE_STYLE_MAP = {
 TICK_SHAPES = ["diagonal", "circle", "square", "triangle", "diamond", "plus"]
 
 SCREENPLAY_STYLE_MAP = {
-    "Scene Heading": dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=22),
-    "Action":        dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=11),
-    "Character":     dict(left_in=2.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=11),
+    # space_before_pt is whole blank lines at the 12pt script line pitch
+    # (SCRIPT_LINE_PITCH_PT): one before action/character/transition, two
+    # before a scene heading or shot.
+    "Scene Heading": dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=24),
+    "Action":        dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=12),
+    "Character":     dict(left_in=2.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=12),
     "Parenthetical": dict(left_in=1.5, right_in=2.0, align=Qt.AlignLeft, case="lower_paren", space_before_pt=0),
     "Dialogue":      dict(left_in=1.0, right_in=1.5, align=Qt.AlignLeft, case="as_is", space_before_pt=0),
-    "Transition":    dict(left_in=4.0, right_in=0.4, align=Qt.AlignRight, case="upper", space_before_pt=11),
-    "Shot":          dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=22),
+    "Transition":    dict(left_in=4.0, right_in=0.4, align=Qt.AlignRight, case="upper", space_before_pt=12),
+    "Shot":          dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=24),
     "General":       dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=0),
     # Non-screenplay documents (beat sheets, treatments, outlines) from
     # File > Import Document - see app/document_import.py. "hanging_in"
@@ -666,6 +703,7 @@ def _render_paragraphs_into_document(doc, paragraphs, px_per_inch):
         style = SCREENPLAY_STYLE_MAP.get(p_type, DEFAULT_SCREENPLAY_STYLE)
 
         block_fmt = QTextBlockFormat()
+        _set_script_line_height(block_fmt, px_per_inch)
         hanging_in = style.get("hanging_in", 0.0)
         block_fmt.setLeftMargin(in_(style["left_in"] + hanging_in))
         if hanging_in:
@@ -1524,10 +1562,13 @@ def _find_dialogue_split_position(doc, block, current_page_top, content_height):
     if layout is None or layout.lineCount() <= 1:
         return None
     block_top = doc.documentLayout().blockBoundingRect(block).top()
+    pitch = _fixed_line_pitch(block)
     split_line_index = None
     for i in range(layout.lineCount()):
         line = layout.lineAt(i)
-        if block_top + line.y() + line.height() - current_page_top > content_height:
+        # Fixed-pitch lines end where the next one starts - see _flow_bottom.
+        line_bottom = block_top + (i + 1) * pitch if pitch else block_top + line.y() + line.height()
+        if line_bottom - current_page_top > content_height:
             split_line_index = i
             break
     if not split_line_index:  # None, or 0 (nothing at all fits)
@@ -1594,12 +1635,14 @@ def _try_split_dialogue_block(doc, block, current_page_top, content_height, tota
     cursor.setBlockFormat(truncated_fmt)
 
     more_fmt = QTextBlockFormat()
+    _set_script_line_height(more_fmt, px_per_inch)
     more_fmt.setAlignment(Qt.AlignCenter)
     more_fmt.setProperty(_SYNTHETIC_BLOCK_PROPERTY, True)
     cursor.insertBlock(more_fmt, blank_fmt)
     cursor.insertText("(MORE)")
 
     contd_fmt = QTextBlockFormat()
+    _set_script_line_height(contd_fmt, px_per_inch)
     contd_fmt.setLeftMargin(in_(character_style["left_in"]))
     contd_fmt.setRightMargin(in_(character_style["right_in"]))
     contd_fmt.setAlignment(character_style["align"])
@@ -1611,6 +1654,7 @@ def _try_split_dialogue_block(doc, block, current_page_top, content_height, tota
     contd_block = cursor.block()
 
     cont_fmt = QTextBlockFormat()
+    _set_script_line_height(cont_fmt, px_per_inch)
     cont_fmt.setLeftMargin(in_(dialogue_style["left_in"]))
     cont_fmt.setRightMargin(in_(dialogue_style["right_in"]))
     cont_fmt.setAlignment(dialogue_style["align"])
@@ -1705,7 +1749,7 @@ def _apply_page_gaps_to_document(doc, content_height, total_gap, px_per_inch=PX_
         if first_block:
             current_page_top = rect.top()
             first_block = False
-        elif rect.bottom() - current_page_top > content_height and rect.top() > current_page_top:
+        elif _flow_bottom(doc, block) - current_page_top > content_height and rect.top() > current_page_top:
             if para_type(block) == "Dialogue":
                 block_position = block.position()
                 length_before_this_split = doc.characterCount()
@@ -2563,7 +2607,7 @@ class ScriptTextEdit(QTextEdit):
         block = doc.begin()
         while block.isValid():
             rect = doc.documentLayout().blockBoundingRect(block)
-            if rect.bottom() - current_page_top > CONTENT_HEIGHT_PX and rect.top() > current_page_top:
+            if _flow_bottom(doc, block) - current_page_top > CONTENT_HEIGHT_PX and rect.top() > current_page_top:
                 current_page_top = rect.top()
                 breaks.append(block.position())
             block = block.next()

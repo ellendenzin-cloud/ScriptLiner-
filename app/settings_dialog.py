@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QMessageBox,
     QKeySequenceEdit,
+    QSpinBox,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QKeySequence, QGuiApplication
@@ -30,6 +31,9 @@ from app.window import (
     KEY_BOX_POSITION_DEFAULT,
     SHORTCUT_ACTIONS,
     MAX_LANES,
+    MAX_PALETTE_COLORS,
+    DEFAULT_OVERLAY_OPACITY,
+    _generated_color,
 )
 
 
@@ -94,7 +98,7 @@ class KeyBoxPositionPicker(QWidget):
                 return key
         return KEY_BOX_POSITION_DEFAULT
 
-MAX_COLORS = 6
+MAX_COLORS = MAX_PALETTE_COLORS
 
 
 class SettingsDialog(QDialog):
@@ -121,7 +125,7 @@ class SettingsDialog(QDialog):
             target_w, target_h = 760, 800
         self.resize(target_w, target_h)
 
-        self._colors = (list(window.colors) + ["#cccccc"] * MAX_COLORS)[:MAX_COLORS]
+        self._colors = list(window.colors)[:MAX_COLORS] or ["#ff4d4d"]
 
         outer_layout = QVBoxLayout(self)
 
@@ -274,19 +278,78 @@ class SettingsDialog(QDialog):
         )
         self.auto_sort_check.setChecked(getattr(window, "auto_sort_shots", False))
         lanes_layout.addWidget(self.auto_sort_check)
+
+        self.length_sort_check = QCheckBox(
+            "Shots by Length\n"
+            "(overlapping shots nest by how much of the page they span - the "
+            "longest shot goes in the outermost lane on the left, the shortest "
+            "innermost, closest to the text)"
+        )
+        self.length_sort_check.setChecked(getattr(window, "length_sort_shots", False))
+        lanes_layout.addWidget(self.length_sort_check)
+        # Both are automatic orders that take over lane placement, so only
+        # one can be on at a time.
+        self.auto_sort_check.toggled.connect(
+            lambda on: self.length_sort_check.setChecked(False) if on else None
+        )
+        self.length_sort_check.toggled.connect(
+            lambda on: self.auto_sort_check.setChecked(False) if on else None
+        )
         layout.addWidget(lanes_group)
 
+        # --- Shot Lines ---
+        lines_group = QGroupBox("Shot Lines")
+        lines_layout = QVBoxLayout(lines_group)
+        self.label_every_segment_check = QCheckBox(
+            "Show the shot number above every section of a split shot\n"
+            "(otherwise it's only printed above the first section)"
+        )
+        self.label_every_segment_check.setChecked(getattr(window, "label_every_segment", True))
+        lines_layout.addWidget(self.label_every_segment_check)
+
+        opacity_row = QHBoxLayout()
+        opacity_row.addWidget(QLabel("Opacity for new lines drawn over the text:"))
+        self.overlay_opacity_spin = QSpinBox()
+        self.overlay_opacity_spin.setRange(10, 100)
+        self.overlay_opacity_spin.setSingleStep(5)
+        self.overlay_opacity_spin.setSuffix(" %")
+        self.overlay_opacity_spin.setValue(getattr(window, "overlay_default_opacity", DEFAULT_OVERLAY_OPACITY))
+        opacity_row.addWidget(self.overlay_opacity_spin)
+        opacity_row.addStretch()
+        lines_layout.addLayout(opacity_row)
+        opacity_note = QLabel(
+            "Each shot can also be set to draw over the text in the Inspector, "
+            "with its own opacity."
+        )
+        opacity_note.setWordWrap(True)
+        lines_layout.addWidget(opacity_note)
+        layout.addWidget(lines_group)
+
         # --- Colors ---
-        color_group = QGroupBox(f"Shot Colors (up to {MAX_COLORS})")
-        color_layout = QGridLayout(color_group)
+        color_group = QGroupBox("Shot Colors")
+        color_outer = QVBoxLayout(color_group)
+
+        count_row = QHBoxLayout()
+        count_row.addWidget(QLabel("Number of colors:"))
+        self.color_count_spin = QSpinBox()
+        self.color_count_spin.setRange(1, MAX_COLORS)
+        self.color_count_spin.setValue(len(self._colors))
+        self.color_count_spin.valueChanged.connect(self._on_color_count_changed)
+        count_row.addWidget(self.color_count_spin)
+        count_row.addStretch()
+        color_outer.addLayout(count_row)
+
+        self._color_grid = QGridLayout()
         self._color_buttons = []
-        for i in range(MAX_COLORS):
-            btn = QPushButton()
-            btn.setFixedSize(56, 32)
-            self._set_button_color(btn, self._colors[i])
-            btn.clicked.connect(lambda checked=False, idx=i: self._pick_color(idx))
-            self._color_buttons.append(btn)
-            color_layout.addWidget(btn, i // 3, i % 3)
+        color_outer.addLayout(self._color_grid)
+        self._rebuild_color_buttons()
+
+        self.unique_colors_check = QCheckBox(
+            "Give every new shot its own new color\n"
+            "(uses the colors above first, then makes up more so no two shots match)"
+        )
+        self.unique_colors_check.setChecked(getattr(window, "unique_shot_colors", False))
+        color_outer.addWidget(self.unique_colors_check)
         layout.addWidget(color_group)
 
         # --- Keyboard Shortcuts ---
@@ -460,6 +523,34 @@ class SettingsDialog(QDialog):
                 for shot in matching:
                     shot.line_style = new_style
 
+    def _rebuild_color_buttons(self):
+        while self._color_grid.count():
+            item = self._color_grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._color_buttons = []
+        for i, color in enumerate(self._colors):
+            btn = QPushButton()
+            btn.setFixedSize(56, 32)
+            self._set_button_color(btn, color)
+            btn.clicked.connect(lambda checked=False, idx=i: self._pick_color(idx))
+            self._color_buttons.append(btn)
+            self._color_grid.addWidget(btn, i // 6, i % 6)
+
+    def _on_color_count_changed(self, count):
+        """Grows or shrinks the palette. New slots start as a generated
+        color that isn't already in it, ready to be recolored."""
+        taken = {c.lower() for c in self._colors}
+        n = 0
+        while len(self._colors) < count:
+            candidate = _generated_color(n)
+            n += 1
+            if candidate.lower() not in taken:
+                taken.add(candidate.lower())
+                self._colors.append(candidate)
+        del self._colors[count:]
+        self._rebuild_color_buttons()
+
     def _set_button_color(self, btn, hex_color):
         btn.setStyleSheet(f"background-color: {hex_color}; border: 1px solid #888;")
 
@@ -506,6 +597,10 @@ class SettingsDialog(QDialog):
             w.theme = "light"
         w.active_lanes = {i for i, cb in enumerate(self._lane_checks) if cb.isChecked()}
         w.auto_sort_shots = self.auto_sort_check.isChecked()
+        w.length_sort_shots = self.length_sort_check.isChecked()
+        w.label_every_segment = self.label_every_segment_check.isChecked()
+        w.overlay_default_opacity = self.overlay_opacity_spin.value()
+        w.unique_shot_colors = self.unique_colors_check.isChecked()
         w.colors = list(self._colors)
 
         for action_id, edit in self._shortcut_edits.items():

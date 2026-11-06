@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
 )
 
-from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QSettings, QUrl, QEvent
+from PySide6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QSettings, QUrl, QEvent
 from PySide6.QtGui import (
     QTextCursor,
     QTextDocument,
@@ -67,6 +67,10 @@ ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 LOGO_LONG_PATH = ASSETS_DIR / "ScriptLinerLogo_Long.png"
 LOGO_LONG_DARK_PATH = ASSETS_DIR / "ScriptLinerLogo_Long_Dark.png"  # wordmark recolored light; gradient bar untouched
 LOGO_SQUARE_PATH = ASSETS_DIR / "ScriptLinerLogo_Square.png"
+# White tick drawn inside a checked checkbox (see the QCheckBox::indicator
+# rules in the stylesheets below). Forward slashes + quotes keep a Windows
+# path with spaces valid inside a stylesheet url().
+CHECK_IMAGE_URL = (ASSETS_DIR / "check.png").as_posix()
 
 # Documents/ScriptStudio/ScriptLinerProgramFiles - the default save/open
 # location, anchored to the user's Documents rather than wherever this app
@@ -278,6 +282,26 @@ QCheckBox, QRadioButton {{
     spacing: 6px;
     background: transparent;
 }}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {theme.GREY_400};
+    border-radius: 4px;
+    background: {theme.WHITE};
+}}
+QCheckBox::indicator:checked {{
+    background: {theme.PURPLE};
+    border: 1px solid {theme.PURPLE};
+    image: url("{CHECK_IMAGE_URL}");
+}}
+QCheckBox::indicator:disabled {{
+    background: {theme.GREY_50};
+    border: 1px solid {theme.GREY_200};
+}}
+QCheckBox::indicator:checked:disabled {{
+    background: {theme.PURPLE_TINT};
+    border: 1px solid {theme.PURPLE_TINT};
+}}
 QScrollBar:vertical, QScrollBar:horizontal {{
     background: {theme.WHITE};
     border: none;
@@ -432,6 +456,26 @@ QCheckBox, QRadioButton {{
     color: {theme.GREY_100};
     spacing: 6px;
     background: transparent;
+}}
+QCheckBox::indicator {{
+    width: 16px;
+    height: 16px;
+    border: 1px solid {theme.GREY_400};
+    border-radius: 4px;
+    background: {theme.GREY_800};
+}}
+QCheckBox::indicator:checked {{
+    background: {theme.PURPLE};
+    border: 1px solid {theme.PURPLE_LIGHT};
+    image: url("{CHECK_IMAGE_URL}");
+}}
+QCheckBox::indicator:disabled {{
+    background: {theme.GREY_900};
+    border: 1px solid {theme.GREY_800};
+}}
+QCheckBox::indicator:checked:disabled {{
+    background: {theme.GREY_800};
+    border: 1px solid {theme.GREY_600};
 }}
 QScrollBar:vertical, QScrollBar:horizontal {{
     background: {theme.GREY_900};
@@ -852,6 +896,62 @@ def _draw_tick_mark(painter, x, y, size, shape):
         painter.drawLine(round(x - size), round(y), round(x + size), round(y))
         painter.drawLine(round(x), round(y - size), round(x), round(y + size))
     painter.restore()
+
+
+MAX_PALETTE_COLORS = 24
+DEFAULT_OVERLAY_OPACITY = 40
+
+
+def _generated_color(n):
+    """The n-th automatically generated shot color. Hues step by the golden
+    angle, so any run of consecutive colors is spread around the wheel
+    (never two similar ones in a row), and saturation/brightness rotate
+    through three tiers so even a long run stays distinguishable. Used
+    once the palette's own colors are all taken, when "every shot gets
+    its own new color" is on."""
+    hue = (n * 0.6180339887498949) % 1.0
+    saturation, value = ((0.78, 0.88), (0.62, 0.97), (0.92, 0.72))[n % 3]
+    return QColor.fromHsvF(hue, saturation, value).name()
+
+
+def _shot_line_x(shot, lane, lane_start_x, lane_width, max_lanes, text_left_x):
+    """Horizontal position of a shot's line: a margin lane's column, or -
+    for a shot drawn over the text (Shot.overlay) - its own column inside
+    the text area, counted from the text's left edge."""
+    if shot.overlay:
+        return round(text_left_x + (lane + 0.5) * lane_width)
+    return lane_start_x + (lane % max_lanes) * lane_width
+
+
+def _overlay_alpha(shot):
+    """0-255 alpha for a shot drawn over the text, or None for a normal
+    margin line (always fully opaque)."""
+    if not shot.overlay:
+        return None
+    return round(255 * max(10, min(100, shot.overlay_opacity)) / 100)
+
+
+def _draw_page_note(painter, text, x_left, bottom_y, max_width, ink, backdrop=None):
+    """Free-text note printed above a shot's start: wrapped to `max_width`,
+    smaller than the script text, with its bottom edge at `bottom_y`. A
+    translucent `backdrop` keeps it readable when it crosses other shots'
+    lines in the margin. Returns the note's top edge."""
+    base = painter.font()
+    note_font = QFont(base)
+    point_size = base.pointSizeF()
+    if point_size > 0:
+        note_font.setPointSizeF(max(5.0, point_size * 0.75))
+    painter.save()
+    painter.setFont(note_font)
+    flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
+    bounds = painter.fontMetrics().boundingRect(QRect(0, 0, max(1, int(max_width)), 100000), flags, text)
+    box = QRectF(x_left, bottom_y - bounds.height(), max_width, bounds.height())
+    if backdrop is not None:
+        painter.fillRect(box.adjusted(-2, -1, 2, 1), backdrop)
+    painter.setPen(ink)
+    painter.drawText(box, flags, text)
+    painter.restore()
+    return box.top()
 
 
 def _draw_handle_arrows(painter, cx, cy, radius, horizontal):
@@ -1705,7 +1805,8 @@ class ScriptTextEdit(QTextEdit):
         self.multi_style_mode = {}
         self.show_lanes = False
         self.active_lanes = set(range(MAX_LANES))  # which of the 6 nominal lanes are enabled (Settings)
-        self.auto_sort_shots = False  # "Shots in Alphabetical Order" - manual drag-to-reassign is a no-op while this is on
+        self.auto_sort_shots = False  # an automatic lane order is on (alphabetical or by length) - manual drag-to-reassign is a no-op while this is on
+        self.label_every_segment = True  # shot number above every section of a split shot
         self.lane_drag_callback = None  # (shot_id, new_lane) -> None
         self.key_overflow_callback = None  # (needs_two_columns: bool) -> None
         self._dragging_shot_id = None
@@ -1805,6 +1906,8 @@ class ScriptTextEdit(QTextEdit):
         x, y = pos.x(), pos.y()
         tolerance = max(6, self.lane_width // 2)
         for shot, lane in self.shots_provider():
+            if shot.overlay:
+                continue  # drawn over the text, not in a draggable margin lane
             lane_x = self.lane_start_x + (lane % self.max_lanes) * self.lane_width
             if abs(x - lane_x) > tolerance:
                 continue
@@ -2144,9 +2247,15 @@ class ScriptTextEdit(QTextEdit):
         show_lane_handles = []  # [(x, mid_y, color), ...]
 
         for shot, lane in shots_with_lanes:
-            x = self.lane_start_x + (lane % self.max_lanes) * self.lane_width
+            x = _shot_line_x(
+                shot, lane, self.lane_start_x, self.lane_width, self.max_lanes,
+                PAGE_MARGIN_LEFT_PX * self.scale,
+            )
 
             line_color = QColor(shot.color)
+            overlay_alpha = _overlay_alpha(shot)
+            if overlay_alpha is not None:
+                line_color.setAlpha(overlay_alpha)
             if self.duplicate_preview is not None and shot.shot_id != self.editing_shot_id:
                 # Fade every OTHER existing shot during placement, so the
                 # preview (solid dodger blue, drawn after this loop) reads
@@ -2154,7 +2263,7 @@ class ScriptTextEdit(QTextEdit):
                 # not the shot actually being edited in place (editing_shot_id),
                 # which stays at full opacity since it's still the current
                 # subject, not just a reference like every other shot.
-                line_color.setAlpha(70)
+                line_color.setAlpha(min(line_color.alpha(), 70))
             pen = QPen(line_color)
             pen.setWidth(self.line_width)
             pen.setStyle(LINE_STYLE_MAP.get(shot.line_style, Qt.SolidLine))
@@ -2214,10 +2323,17 @@ class ScriptTextEdit(QTextEdit):
                         painter.drawLine(x + 4, cursor_y, x + 4, seg_bottom)
                     line_spans.append((cursor_y, seg_bottom))
 
+            # Baselines for the shot number repeated above every later
+            # section of a split shot (see label_every_segment) - drawn
+            # together with the first label below, after the ticks, so
+            # changing the pen for text can't thin out a mark.
+            extra_label_ys = []
             for (_, bottom_a), (top_b, _) in zip(segs, segs[1:]):
                 fitted_size = _mark_size_for_gap(cross, top_b - bottom_a)
                 _draw_break_zigzag(painter, x, bottom_a, fitted_size)
                 _draw_break_zigzag(painter, x, top_b, fitted_size, flip=True)
+                if self.label_every_segment:
+                    extra_label_ys.append(top_b - _break_mark_height(fitted_size) - 3)
 
             if first_top is not None:
                 if not shot.suppress_start_tick:
@@ -2225,14 +2341,25 @@ class ScriptTextEdit(QTextEdit):
                 if last_bottom is not None and not shot.suppress_end_tick:
                     painter.drawLine(x - cross, last_bottom + cross, x + cross, last_bottom - cross)
 
+                painter.setPen(line_color)
+                metrics = painter.fontMetrics()
+                text_width = metrics.horizontalAdvance(shot.shot_id)
+                label_x = x - (text_width // 2)
                 if not shot.suppress_start_tick:
-                    painter.setPen(line_color)
-                    text_width = painter.fontMetrics().horizontalAdvance(shot.shot_id)
-                    label_x = x - (text_width // 2)
                     label_y = first_top - cross - 4
                     painter.drawText(label_x, label_y, shot.shot_id)
+                    note = (shot.page_note or "").strip()
+                    if note:
+                        backdrop = QColor(PAGE_DARK_BG if self.dark_page else "#ffffff")
+                        backdrop.setAlpha(215)
+                        _draw_page_note(
+                            painter, note, 3 * self.scale, label_y - metrics.ascent() - 2,
+                            PAGE_MARGIN_LEFT_PX * self.scale - 6 * self.scale, line_color, backdrop,
+                        )
+                for label_y in extra_label_ys:
+                    painter.drawText(label_x, round(label_y), shot.shot_id)
 
-                if self.show_lanes and last_bottom is not None:
+                if self.show_lanes and last_bottom is not None and not shot.overlay:
                     # Just the center side-to-side handle (not the
                     # top/bottom resize ones - Show Lanes only ever
                     # reassigns which lane a shot occupies, it doesn't
@@ -2581,8 +2708,17 @@ class MainWindow(QMainWindow):
         self.page_gap_style = "gap"  # or "dotted"
         self.show_lanes = False
         self.pinned_lanes = set()  # shot_ids manually assigned to a lane via drag
+        # shot_id -> the lane it was dragged to. shot_lanes itself is
+        # overwritten by an automatic lane order (alphabetical/by length),
+        # so this remembers the manual layout for when that order is
+        # switched off again - see _recompute_lanes.
+        self.manual_lanes = {}
         self.active_lanes = set(range(MAX_LANES))  # which of the 6 nominal lanes are enabled
         self.auto_sort_shots = False  # "Shots in Alphabetical Order" - see _recompute_lanes
+        self.length_sort_shots = False  # "Shots by Length" (longest outermost) - see _recompute_lanes
+        self.unique_shot_colors = False  # every new shot gets a color nothing else uses yet
+        self.label_every_segment = True  # shot number above every section of a split shot
+        self.overlay_default_opacity = DEFAULT_OVERLAY_OPACITY
 
         # Dark Mode is a personal display preference, not a project
         # attribute - it's loaded from/saved to QSettings (like keyboard
@@ -3159,7 +3295,8 @@ class MainWindow(QMainWindow):
         self.script_view.shot_type_style_map = self.shot_type_style_map
         self.script_view.multi_style_mode = self.multi_style_mode
         self.script_view.active_lanes = self.active_lanes
-        self.script_view.auto_sort_shots = self.auto_sort_shots
+        self.script_view.auto_sort_shots = self.auto_sort_shots or self.length_sort_shots
+        self.script_view.label_every_segment = self.label_every_segment
         self._update_move_shots_availability()
         self.script_view.apply_page_gaps()
         # The Line Style dropdown always reflects the current effective
@@ -3287,6 +3424,15 @@ class MainWindow(QMainWindow):
         if data.get("colors"):
             self.colors = data["colors"]
         self.pinned_lanes = set(data.get("pinned_lanes", []))
+        self.manual_lanes = {k: int(v) for k, v in (data.get("manual_lanes") or {}).items()}
+        self.script_view.base_lane_width = max(
+            MIN_LANE_WIDTH, int(data.get("base_lane_width") or LANE_WIDTH)
+        )
+        self.script_view._apply_scale_to_lane_geometry()
+        self.unique_shot_colors = bool(data.get("unique_shot_colors", False))
+        self.length_sort_shots = bool(data.get("length_sort_shots", False))
+        self.label_every_segment = bool(data.get("label_every_segment", True))
+        self.overlay_default_opacity = int(data.get("overlay_default_opacity") or DEFAULT_OVERLAY_OPACITY)
 
         self.shot_type_style_map = data.get("shot_type_style_map") or {
             st: "solid" for st in ShotInspectorPanel.SHOT_TYPES if st
@@ -3528,10 +3674,10 @@ class MainWindow(QMainWindow):
         self.shots = []
         self.shot_lanes = {}
         self.pinned_lanes = set()
+        self.manual_lanes = {}
         for shot, lane in shot_lane_pairs:
             self.shots.append(shot)
-            self.shot_lanes[shot.shot_id] = lane
-            self.pinned_lanes.add(shot.shot_id)
+            self._set_manual_lane(shot.shot_id, lane)
 
         self._rebuild_shot_list()  # also rebuilds shots_by_id and calls update_highlights()
         self._dirty = True
@@ -3584,8 +3730,7 @@ class MainWindow(QMainWindow):
         project's own) are appended."""
         for shot, lane in merged_shot_lane_pairs:
             self.shots.append(shot)
-            self.shot_lanes[shot.shot_id] = lane
-            self.pinned_lanes.add(shot.shot_id)
+            self._set_manual_lane(shot.shot_id, lane)
             self.scene_used_letters.setdefault(shot.scene_number, set()).add(shot.camera_letter)
 
         self._rebuild_shot_list()  # also rebuilds shots_by_id and calls update_highlights()
@@ -3613,6 +3758,9 @@ class MainWindow(QMainWindow):
         self.shot_lanes = {}
         self.camera_letter_colors = {}
         self.pinned_lanes = set()
+        self.manual_lanes = {}
+        self.script_view.base_lane_width = LANE_WIDTH  # a new script starts at the default line density
+        self.script_view._apply_scale_to_lane_geometry()
         self.undo_stack = []
         self.redo_stack = []
         self.shot_list.clear()
@@ -3792,10 +3940,34 @@ class MainWindow(QMainWindow):
         """Shots sharing a camera letter (e.g. "A" for camera A in a
         multi-camera setup) always share the same color."""
         if letter not in self.camera_letter_colors:
-            self.camera_letter_colors[letter] = self.colors[
-                len(self.camera_letter_colors) % len(self.colors)
-            ]
+            if self.unique_shot_colors:
+                self.camera_letter_colors[letter] = self._next_shot_color(
+                    extra_used=self.camera_letter_colors.values()
+                )
+            else:
+                self.camera_letter_colors[letter] = self.colors[
+                    len(self.camera_letter_colors) % len(self.colors)
+                ]
         return self.camera_letter_colors[letter]
+
+    def _next_shot_color(self, extra_used=()):
+        """The color for a newly created shot. Normally the palette cycles
+        in creation order. With "every shot gets its own new color" on,
+        it's the first palette color no shot is using, then generated
+        colors (see _generated_color) once the palette runs out - so no
+        two shots ever share one."""
+        if not self.unique_shot_colors:
+            return self.colors[len(self.shots) % len(self.colors)]
+        used = {c.lower() for c in extra_used} | {s.color.lower() for s in self.shots}
+        for color in self.colors:
+            if color.lower() not in used:
+                return color
+        n = 0
+        while True:
+            color = _generated_color(n)
+            if color.lower() not in used:
+                return color
+            n += 1
 
     def _shape_for_color(self, color: str) -> str:
         """The tick-mark shape paired with `color` by shared index into
@@ -3807,7 +3979,12 @@ class MainWindow(QMainWindow):
         try:
             index = self.colors.index(color)
         except ValueError:
-            index = 0
+            # A generated color (see _generated_color) or an old custom
+            # one - still deterministic, so a shot keeps its shape.
+            try:
+                index = int(color.lstrip("#"), 16)
+            except ValueError:
+                index = 0
         return TICK_SHAPES[index % len(TICK_SHAPES)]
 
     def create_shot(self):
@@ -3832,7 +4009,7 @@ class MainWindow(QMainWindow):
 
         # Camera letter starts blank - it's assigned deliberately in the
         # inspector, independent of the shot's scene-sequential letter.
-        color = self.colors[len(self.shots) % len(self.colors)]
+        color = self._next_shot_color()
 
         shot = Shot(
             shot_id=shot_id,
@@ -3946,8 +4123,7 @@ class MainWindow(QMainWindow):
             source.start_index = start
             source.segments[-1].end_index = end
             source.end_index = end
-            self.shot_lanes[source.shot_id] = preview.get("lane", 0)
-            self.pinned_lanes.add(source.shot_id)
+            self._set_manual_lane(source.shot_id, preview.get("lane", 0))
             self.update_highlights()
             self._check_lane_overflow(source)
             message = f"Updated {source.shot_id}'s placement."
@@ -3966,7 +4142,7 @@ class MainWindow(QMainWindow):
             if camera_letter:
                 color = self._color_for_camera_letter(camera_letter)
             else:
-                color = self.colors[len(self.shots) % len(self.colors)]
+                color = self._next_shot_color()
 
             new_shot = Shot(
                 shot_id=shot_id,
@@ -3991,8 +4167,7 @@ class MainWindow(QMainWindow):
             # handle is pinned, same as manually dragging a shot in Show
             # Lanes - otherwise auto-packing could silently move it
             # elsewhere the moment another shot is added nearby.
-            self.shot_lanes[new_shot.shot_id] = preview.get("lane", 0)
-            self.pinned_lanes.add(new_shot.shot_id)
+            self._set_manual_lane(new_shot.shot_id, preview.get("lane", 0))
             self.update_highlights()
 
             item = QListWidgetItem(new_shot.shot_id)
@@ -4053,6 +4228,7 @@ class MainWindow(QMainWindow):
         self.shots.remove(shot)
         self.shot_lanes.pop(shot.shot_id, None)
         self.pinned_lanes.discard(shot.shot_id)
+        self.manual_lanes.pop(shot.shot_id, None)
         self._rebuild_shot_list()
 
         self.statusBar().showMessage(f"Deleted shot {shot.shot_id}.", 3000)
@@ -4149,6 +4325,22 @@ class MainWindow(QMainWindow):
             self.update_highlights()
             return
 
+        if field_name == "overlay":
+            value = bool(value)
+            if shot.overlay == value:
+                return
+            self._push_undo()
+            shot.overlay = value
+            if value:
+                shot.overlay_opacity = self.overlay_default_opacity
+            # Moving between the margin and the text means any manual
+            # margin lane no longer applies.
+            self.pinned_lanes.discard(shot.shot_id)
+            self.manual_lanes.pop(shot.shot_id, None)
+            self.update_highlights()
+            self.inspector.set_shot(shot)  # refresh the opacity box's enabled state/value
+            return
+
         if getattr(shot, field_name, None) == value:
             return
         self._push_undo()
@@ -4156,6 +4348,8 @@ class MainWindow(QMainWindow):
 
         if field_name == "line_style":
             self.update_highlights()
+        elif field_name in ("overlay_opacity", "page_note"):
+            self.script_view.viewport().update()
 
     @staticmethod
     def _shot_span(shot):
@@ -4167,11 +4361,14 @@ class MainWindow(QMainWindow):
         return min(starts), max(ends)
 
     def _recompute_lanes(self) -> int:
+        """Assigns every shot a lane (self.shot_lanes) and returns how many
+        MARGIN lanes that takes. A shot drawn over the text (Shot.overlay)
+        is packed into its own separate set of lanes inside the text area,
+        so it never uses up margin space - its number is only meaningful
+        together with shot.overlay (see _shot_line_x)."""
         if not self.shots:
             self.shot_lanes = {}
             return 0
-
-        shot_bounds = self._shot_span
 
         def natural_key(s):
             match = SHOT_ID_RE.match(s.shot_id)
@@ -4181,49 +4378,84 @@ class MainWindow(QMainWindow):
 
         # Y positions (normalized to scale=1.0, so the same threshold
         # applies however zoomed-in the interactive view happens to be
-        # right now) used only to enforce MIN_LANE_GAP_PX below - lane
+        # right now) used only to enforce MIN_LANE_GAP_PX - lane
         # assignment itself still keys off text position, as before.
         doc = self.script_view.document()
         scale = max(self.script_view.scale, 1e-6)
 
         def y_of(clean_position):
-            # shot_bounds (_shot_span) returns "clean" positions - see
-            # SplitMap - convert to this document's current rendered
-            # position before measuring an actual pixel Y from it.
+            # _shot_span returns "clean" positions - see SplitMap -
+            # convert to this document's current rendered position
+            # before measuring an actual pixel Y from it.
             rendered_position = self.script_view.split_map.clean_to_rendered(clean_position)
             return _absolute_y_for_position(doc, rendered_position) / scale
 
         ordered = sorted(self.shots, key=natural_key)
-        lane_end_positions = []
-        lane_end_y = []
+        margin_shots = [s for s in ordered if not s.overlay]
+        overlay_shots = [s for s in ordered if s.overlay]
+        # An automatic lane order (alphabetical, or by length) ignores
+        # manual pins entirely and re-packs every shot, so overlaps always
+        # line up the same way regardless of how shots were dragged.
+        forced = self.auto_sort_shots or self.length_sort_shots
         assignment = {}
 
-        # Shots pinned to a lane (dragged there in Show Lanes mode) keep
-        # that exact lane, and everything else auto-packs around them -
-        # unless "Shots in Alphabetical Order" is on, in which case pins
-        # are ignored entirely and every shot goes through the natural-
-        # order auto-pack below, so overlaps always sort left to right by
-        # scene/camera letter.
-        if not self.auto_sort_shots:
-            for shot in ordered:
-                if shot.shot_id in self.pinned_lanes and shot.shot_id in self.shot_lanes:
-                    lane = self.shot_lanes[shot.shot_id]
-                    shot_start, shot_end = shot_bounds(shot)
-                    while len(lane_end_positions) <= lane:
-                        lane_end_positions.append(0)
-                        lane_end_y.append(float("-inf"))
-                    lane_end_positions[lane] = max(lane_end_positions[lane], shot_end)
-                    lane_end_y[lane] = max(lane_end_y[lane], y_of(shot_end))
-                    assignment[shot.shot_id] = lane
+        pinned_lane_of = {}
+        if not forced:
+            # Pinned shots go back to where the user dragged them - read
+            # from manual_lanes, which an automatic order never touches,
+            # not shot_lanes, which it overwrites. (A pin from before
+            # manual_lanes existed has no entry yet, so its current lane
+            # is taken as the manual one - only ever filling a gap.)
+            for shot in margin_shots:
+                if shot.shot_id not in self.pinned_lanes:
+                    continue
+                if shot.shot_id not in self.manual_lanes and shot.shot_id in self.shot_lanes:
+                    self.manual_lanes[shot.shot_id] = self.shot_lanes[shot.shot_id]
+                lane = self.manual_lanes.get(shot.shot_id)
+                if lane is not None:
+                    pinned_lane_of[shot.shot_id] = lane
 
-        for shot in ordered:
+        if self.length_sort_shots:
+            margin_count = self._pack_lanes_by_length(margin_shots, assignment, y_of, honor_disabled=True)
+            self._pack_lanes_by_length(overlay_shots, assignment, y_of, honor_disabled=False)
+        else:
+            margin_count = self._pack_lanes_in_order(
+                margin_shots, assignment, y_of, pinned_lane_of, honor_disabled=True
+            )
+            self._pack_lanes_in_order(overlay_shots, assignment, y_of, {}, honor_disabled=False)
+
+        self.shot_lanes = assignment
+        return margin_count
+
+    def _pack_lanes_in_order(self, shots, assignment, y_of, pinned_lane_of, honor_disabled):
+        """First-fit packing in scene/camera-letter order: each shot takes
+        the first lane that's free by the time it starts. Shots in
+        `pinned_lane_of` keep their exact lane and everything else packs
+        around them. Returns the number of lanes used."""
+        shot_bounds = self._shot_span
+        lane_end_positions = []
+        lane_end_y = []
+
+        for shot in shots:
+            lane = pinned_lane_of.get(shot.shot_id)
+            if lane is None:
+                continue
+            shot_start, shot_end = shot_bounds(shot)
+            while len(lane_end_positions) <= lane:
+                lane_end_positions.append(0)
+                lane_end_y.append(float("-inf"))
+            lane_end_positions[lane] = max(lane_end_positions[lane], shot_end)
+            lane_end_y[lane] = max(lane_end_y[lane], y_of(shot_end))
+            assignment[shot.shot_id] = lane
+
+        for shot in shots:
             if shot.shot_id in assignment:
                 continue
             shot_start, shot_end = shot_bounds(shot)
             shot_start_y = y_of(shot_start)
             placed_lane = None
             for lane_index, occupied_until in enumerate(lane_end_positions):
-                if _lane_disabled(lane_index, self.active_lanes):
+                if honor_disabled and _lane_disabled(lane_index, self.active_lanes):
                     continue
                 if (
                     shot_start >= occupied_until
@@ -4239,7 +4471,7 @@ class MainWindow(QMainWindow):
                 # so they keep their fixed visual column but can never be
                 # selected (here or by the "first fit" search above).
                 placed_lane = len(lane_end_positions)
-                while _lane_disabled(placed_lane, self.active_lanes):
+                while honor_disabled and _lane_disabled(placed_lane, self.active_lanes):
                     lane_end_positions.append(float("inf"))
                     lane_end_y.append(float("inf"))
                     placed_lane += 1
@@ -4247,16 +4479,68 @@ class MainWindow(QMainWindow):
                 lane_end_y.append(y_of(shot_end))
             assignment[shot.shot_id] = placed_lane
 
-        self.shot_lanes = assignment
         return len(lane_end_positions)
+
+    def _pack_lanes_by_length(self, shots, assignment, y_of, honor_disabled):
+        """Longest-first packing: the shot spanning the most page goes in
+        the outermost (leftmost) lane, and shorter ones fill in toward
+        the text, so overlapping shots nest like brackets - long ones on
+        the outside, short ones on the inside. A shot takes the first lane
+        where nothing it would touch is already sitting. Returns the
+        number of lanes used."""
+        shot_bounds = self._shot_span
+        info = {}
+        for shot in shots:
+            start, end = shot_bounds(shot)
+            start_y, end_y = y_of(start), y_of(end)
+            info[shot.shot_id] = (start, end, start_y, end_y)
+
+        def sort_key(shot):
+            start, end, start_y, end_y = info[shot.shot_id]
+            match = SHOT_ID_RE.match(shot.shot_id)
+            natural = (int(match.group(1)), match.group(2) or "") if match else (float("inf"), shot.shot_id)
+            return (-(end_y - start_y), -(end - start), natural)
+
+        def fits(lane_items, start, end, start_y, end_y):
+            for p_start, p_end, p_start_y, p_end_y in lane_items:
+                after = start >= p_end and start_y - p_end_y >= MIN_LANE_GAP_PX
+                before = p_start >= end and p_start_y - end_y >= MIN_LANE_GAP_PX
+                if not (after or before):
+                    return False
+            return True
+
+        lanes = []  # lanes[i] = [(start, end, start_y, end_y), ...]
+        highest = -1
+        for shot in sorted(shots, key=sort_key):
+            start, end, start_y, end_y = info[shot.shot_id]
+            lane_index = 0
+            while True:
+                if honor_disabled and _lane_disabled(lane_index, self.active_lanes):
+                    lane_index += 1
+                    continue
+                while len(lanes) <= lane_index:
+                    lanes.append([])
+                if fits(lanes[lane_index], start, end, start_y, end_y):
+                    break
+                lane_index += 1
+            lanes[lane_index].append(info[shot.shot_id])
+            assignment[shot.shot_id] = lane_index
+            highest = max(highest, lane_index)
+        return highest + 1
+
+    def _set_manual_lane(self, shot_id: str, lane: int):
+        """Pins a shot to `lane` and remembers it as a manual choice, so
+        it survives an automatic lane order being turned on and off."""
+        self.shot_lanes[shot_id] = lane
+        self.pinned_lanes.add(shot_id)
+        self.manual_lanes[shot_id] = lane
 
     def _pin_shot_lane(self, shot_id: str, lane: int):
         """Pin a shot to a specific lane (from dragging it in Show Lanes
         mode) and keep it there on future lane recomputes."""
         if shot_id not in self.shots_by_id:
             return
-        self.shot_lanes[shot_id] = lane
-        self.pinned_lanes.add(shot_id)
+        self._set_manual_lane(shot_id, lane)
         self._push_undo()
         self._recompute_lanes()
         self.update_highlights()
@@ -4288,7 +4572,7 @@ class MainWindow(QMainWindow):
         just get overridden. Grey the button out and swap its shortcut
         hint for "[Unavailable]" instead of leaving a live control that
         does nothing."""
-        available = not self.auto_sort_shots
+        available = not (self.auto_sort_shots or self.length_sort_shots)
         self.show_lanes_btn.setEnabled(available)
         if available:
             self.show_lanes_btn.update_shortcut_hint(self._load_shortcut("show_lanes").toString())
@@ -4313,10 +4597,38 @@ class MainWindow(QMainWindow):
         )
         continue_btn = box.addButton("Continue with Overlap", QMessageBox.RejectRole)
         smaller_btn = box.addButton("Make Lines Smaller", QMessageBox.AcceptRole)
+        overlay_btn = box.addButton("Draw Extra Lines Over the Text", QMessageBox.ActionRole)
         box.setDefaultButton(smaller_btn)
         box.exec()
         if box.clickedButton() is smaller_btn:
             self.script_view.set_lane_capacity(needed_lanes)
+        elif box.clickedButton() is overlay_btn:
+            self._move_overflow_shots_over_text()
+
+    def _move_overflow_shots_over_text(self):
+        """Switches every shot that didn't fit in the margin lanes over to
+        being drawn on top of the text (at the default opacity from
+        Settings), which frees their margin lanes up. Undoable."""
+        max_lanes = self.script_view.max_lanes
+        overflowing = [
+            s for s in self.shots
+            if not s.overlay and self.shot_lanes.get(s.shot_id, 0) >= max_lanes
+        ]
+        if not overflowing:
+            return
+        self._push_undo()
+        for shot in overflowing:
+            shot.overlay = True
+            shot.overlay_opacity = self.overlay_default_opacity
+            self.pinned_lanes.discard(shot.shot_id)
+            self.manual_lanes.pop(shot.shot_id, None)
+        self.update_highlights()
+        if self.selected_shot is not None:
+            self.inspector.set_shot(self.selected_shot)
+        plural = "s" if len(overflowing) != 1 else ""
+        self.statusBar().showMessage(
+            f"{len(overflowing)} line{plural} moved over the text - adjust opacity in the Inspector.", 5000
+        )
 
     def _snapshot(self):
         return (
@@ -4700,9 +5012,12 @@ class MainWindow(QMainWindow):
                     continue
                 shots_on_page.append((shot, max(segs[visible_indices[0]][0], content_start)))
 
-                x = lane_start_x + (lane % max_lanes) * lane_width
+                x = _shot_line_x(shot, lane, lane_start_x, lane_width, max_lanes, left_margin_px)
 
                 shot_ink = QColor("#000000") if black_and_white else QColor(shot.color)
+                overlay_alpha = _overlay_alpha(shot)
+                if overlay_alpha is not None:
+                    shot_ink.setAlpha(overlay_alpha)
                 pen = QPen(shot_ink)
                 pen.setWidth(line_width)
                 pen.setStyle(LINE_STYLE_MAP.get(shot.line_style, Qt.SolidLine))
@@ -4731,12 +5046,15 @@ class MainWindow(QMainWindow):
                 # edge actually falls on this page. This covers both a
                 # same-page gap and a gap that itself straddles a page
                 # boundary (each edge then lands on a different page).
+                extra_label_ys = []  # the shot number above every later section - see label_every_segment
                 for (_, bottom_a), (top_b, _) in zip(segs, segs[1:]):
                     fitted_size = _mark_size_for_gap(cross, top_b - bottom_a)
                     if content_start - 0.5 <= bottom_a <= page_content_bottom + 0.5:
                         _draw_break_zigzag(painter, x, bottom_a, fitted_size)
                     if content_start - 0.5 <= top_b <= page_content_bottom + 0.5:
                         _draw_break_zigzag(painter, x, top_b, fitted_size, flip=True)
+                        if self.label_every_segment:
+                            extra_label_ys.append(top_b - _break_mark_height(fitted_size) - 3)
 
                 # The shot's true start: a normal tick only on the page
                 # where it actually lives; a flipped "resume" mark on a
@@ -4763,12 +5081,22 @@ class MainWindow(QMainWindow):
                 # The label goes last so that changing the pen color for it
                 # (which also resets the pen width to the default cosmetic
                 # hairline) can't thin out a tick or break mark drawn after.
-                if draw_label:
+                if draw_label or extra_label_ys:
                     painter.setPen(shot_ink)
-                    text_width = painter.fontMetrics().horizontalAdvance(shot.shot_id)
+                    metrics = painter.fontMetrics()
+                    text_width = metrics.horizontalAdvance(shot.shot_id)
                     label_x = x - (text_width // 2)
-                    label_y = first_top - cross - 4
-                    painter.drawText(label_x, label_y, shot.shot_id)
+                    if draw_label:
+                        label_y = first_top - cross - 4
+                        painter.drawText(label_x, label_y, shot.shot_id)
+                        note = (shot.page_note or "").strip()
+                        if note:
+                            _draw_page_note(
+                                painter, note, 3 * scale, label_y - metrics.ascent() - 2,
+                                left_margin_px - 6 * scale, shot_ink, QColor(255, 255, 255, 215),
+                            )
+                    for label_y in extra_label_ys:
+                        painter.drawText(label_x, round(label_y), shot.shot_id)
 
             key_on_this_page = self.key_enabled and (page_index == 0 or self.key_placement == "every_page")
             if key_on_this_page:

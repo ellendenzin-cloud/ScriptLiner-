@@ -26,6 +26,15 @@ def project_to_dict(window) -> dict:
         "camera_letter_colors": window.camera_letter_colors,
         "colors": window.colors,
         "pinned_lanes": sorted(window.pinned_lanes),
+        # Where each pinned shot was dragged to - kept separately from
+        # shot_lanes (which an automatic lane order overwrites) so turning
+        # that order off again brings the manual layout back.
+        "manual_lanes": window.manual_lanes,
+        "base_lane_width": window.script_view.base_lane_width,
+        "unique_shot_colors": window.unique_shot_colors,
+        "length_sort_shots": window.length_sort_shots,
+        "label_every_segment": window.label_every_segment,
+        "overlay_default_opacity": window.overlay_default_opacity,
         "shot_type_style_map": window.shot_type_style_map,
         "shot_type_affects_style": window.shot_type_affects_style,
         "key_enabled": window.key_enabled,

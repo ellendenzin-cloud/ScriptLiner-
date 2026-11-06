@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QPushButton,
     QLabel,
+    QCheckBox,
+    QSpinBox,
 )
 from PySide6.QtCore import Signal, Qt
 
@@ -87,6 +89,22 @@ class ShotInspectorPanel(QWidget):
         )
         form.addRow("Line Style", self.line_style_combo)
 
+        # A line normally runs down the side margin. This draws it over
+        # the script text instead, at its own opacity - useful when the
+        # margin is full, or to see the line against the lines it covers.
+        self.overlay_check = QCheckBox("Draw line over the text")
+        self.overlay_check.toggled.connect(lambda on: self._emit_change("overlay", on))
+        form.addRow(self.overlay_check)
+
+        self.overlay_opacity_spin = QSpinBox()
+        self.overlay_opacity_spin.setRange(10, 100)
+        self.overlay_opacity_spin.setSingleStep(5)
+        self.overlay_opacity_spin.setSuffix(" %")
+        self.overlay_opacity_spin.valueChanged.connect(
+            lambda val: self._emit_change("overlay_opacity", val)
+        )
+        form.addRow("Line Opacity", self.overlay_opacity_spin)
+
         layout.addLayout(form)
 
         layout.addWidget(QLabel("Description"))
@@ -104,6 +122,15 @@ class ShotInspectorPanel(QWidget):
             lambda: self._emit_change("notes", self.notes_edit.toPlainText())
         )
         layout.addWidget(self.notes_edit)
+
+        layout.addWidget(QLabel("On-Page Note (printed above the shot)"))
+        self.page_note_edit = QTextEdit()
+        self.page_note_edit.setMaximumHeight(70)
+        self.page_note_edit.setPlaceholderText("Any text - shows above the shot's number on the page and in exports")
+        self.page_note_edit.textChanged.connect(
+            lambda: self._emit_change("page_note", self.page_note_edit.toPlainText())
+        )
+        layout.addWidget(self.page_note_edit)
 
         self.edit_placement_btn = make_shortcut_button("Edit Start/End", "Q")
         self.edit_placement_btn.clicked.connect(self.edit_placement_requested.emit)
@@ -147,7 +174,8 @@ class ShotInspectorPanel(QWidget):
             self.shot_number_edit, self.camera_letter_edit, self.shot_type_combo,
             self.lens_edit, self.camera_movement_edit, self.line_style_combo,
             self.description_edit, self.notes_edit, self.edit_placement_btn,
-            self.duplicate_btn,
+            self.duplicate_btn, self.overlay_check, self.overlay_opacity_spin,
+            self.page_note_edit,
         ]:
             widget.setEnabled(enabled)
             widget.setFocusPolicy(Qt.StrongFocus)
@@ -171,6 +199,8 @@ class ShotInspectorPanel(QWidget):
             self.line_style_combo.setCurrentIndex(0)
             self.description_edit.clear()
             self.notes_edit.clear()
+            self.overlay_check.setChecked(False)
+            self.page_note_edit.clear()
         else:
             self.title_label.setText(f"Shot {shot.shot_id}")
             self.shot_number_edit.setText(shot.shot_id)
@@ -183,5 +213,9 @@ class ShotInspectorPanel(QWidget):
             self.line_style_combo.setCurrentIndex(idx if idx >= 0 else 0)
             self.description_edit.setPlainText(shot.description)
             self.notes_edit.setPlainText(shot.notes)
+            self.overlay_check.setChecked(shot.overlay)
+            self.overlay_opacity_spin.setValue(shot.overlay_opacity)
+            self.page_note_edit.setPlainText(shot.page_note)
 
+        self.overlay_opacity_spin.setEnabled(shot is not None and shot.overlay)
         self._loading = False

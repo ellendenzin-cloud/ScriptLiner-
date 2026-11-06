@@ -71,9 +71,11 @@ jobs:
           # annotation, which (unlike the step log) is visible to anyone.
           fail() {
             echo "$1"
-            MSG=$(printf '%s' "$1" | tail -c 1500 | sed ':a;N;$!ba;s/%/%25/g;s//%0D/g;s/
-/%0A/g')
-            echo "::error title=Packaged app update check failed::$MSG"
+            python3 - "$1" <<'PY'
+          import sys
+          msg = sys.argv[1][-1500:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::error title=Packaged app update check failed::" + msg)
+          PY
             exit 1
           }
           OUT=$(dist/ScriptLiner.app/Contents/MacOS/ScriptLiner --check-update 2>&1) || fail "exit code $?: $OUT"

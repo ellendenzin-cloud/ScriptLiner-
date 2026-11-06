@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # Pushing a tag like v0.16 builds AND publishes a GitHub Release, which
+    # is what the in-app updater (app/updater.py) downloads from.
+    tags: ["v*"]
     paths:
       - "app/**"
       - "assets/**"
@@ -13,11 +16,23 @@ on:
       - "ScriptLiner_mac.spec"
       - ".github/workflows/build-mac.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          APP_V=$(python3 -c "import re; print(re.search(r'APP_VERSION = \"([^\"]+)\"', open('app/version.py').read()).group(1))")
+          if [ "v$APP_V" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match APP_VERSION $APP_V in app/version.py"
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -49,6 +64,17 @@ jobs:
       - name: Package as a .dmg
         run: |
           hdiutil create -volname ScriptLiner -srcfolder dist/ScriptLiner.app -ov -format UDZO dist/ScriptLiner.dmg
+
+      - name: Zip the app for in-app updates
+        run: ditto -c -k --keepParent dist/ScriptLiner.app dist/ScriptLiner-macOS.zip
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/ScriptLiner.dmg dist/ScriptLiner-macOS.zip \
+            --title "ScriptLiner ${GITHUB_REF_NAME#v}" --generate-notes
 
       - uses: actions/upload-artifact@v4
         with:

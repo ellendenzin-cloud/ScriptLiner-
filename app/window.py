@@ -1,6 +1,9 @@
 import re
+import sys
 import copy
 import math
+import shutil
+import tempfile
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -23,6 +26,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QScrollArea,
     QDialog,
+    QProgressDialog,
 )
 
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QSettings, QUrl, QEvent
@@ -53,6 +57,8 @@ from app.document_import import import_document
 from app.project_io import dict_to_shots, save_project, load_project_data
 from app.studio_link import ensure_program_files_dir
 from app import theme
+from app import updater
+from app.version import APP_VERSION
 
 SCENE_HEADING_RE = re.compile(r'^\s*(INT|EXT|INT\.?/EXT|I/E)[./]', re.IGNORECASE)
 SHOT_ID_RE = re.compile(r'^(\d+)([A-Za-z]*)$')  # e.g. "12A" -> scene 12, letter A
@@ -2614,6 +2620,7 @@ class MainWindow(QMainWindow):
         self._autosave_timer.start(AUTOSAVE_INTERVAL_MS)
 
         self._restore_last_session()
+        QTimer.singleShot(4000, self._auto_check_for_updates)
 
     def _build_ui(self):
         self.script_view = ScriptTextEdit()
@@ -2905,6 +2912,152 @@ class MainWindow(QMainWindow):
         guide_action.triggered.connect(self.show_guide)
         feedback_action = help_menu.addAction("Send Feedback...")
         feedback_action.triggered.connect(self._open_feedback_form)
+
+        # In-app updating is only built for the macOS app (see
+        # app/updater.py); other platforms don't get the menu items.
+        if sys.platform == "darwin":
+            help_menu.addSeparator()
+            update_action = help_menu.addAction("Check for Updates...")
+            update_action.triggered.connect(lambda: self.check_for_updates(manual=True))
+            self.auto_update_action = help_menu.addAction("Check for Updates on Startup")
+            self.auto_update_action.setCheckable(True)
+            self.auto_update_action.setChecked(
+                QSettings("ScriptLiner", "ScriptLiner").value("updates/auto_check", True, type=bool)
+            )
+            self.auto_update_action.toggled.connect(
+                lambda on: QSettings("ScriptLiner", "ScriptLiner").setValue("updates/auto_check", on)
+            )
+
+    def _auto_check_for_updates(self):
+        """Quiet startup check - only in the packaged Mac app, only if the
+        user hasn't turned it off, and it says nothing unless there's an
+        update (or a failure worth mentioning, which it isn't)."""
+        if updater.current_app_bundle() is None:
+            return
+        if not QSettings("ScriptLiner", "ScriptLiner").value("updates/auto_check", True, type=bool):
+            return
+        self.check_for_updates(manual=False)
+
+    def check_for_updates(self, manual=True):
+        if getattr(self, "_update_check_thread", None) is not None:
+            return
+        thread = updater.UpdateCheckThread(self)
+        thread.result.connect(lambda release, error: self._on_update_check_done(manual, release, error))
+        thread.finished.connect(self._clear_update_check_thread)
+        self._update_check_thread = thread
+        if manual:
+            self.statusBar().showMessage("Checking for updates...", 3000)
+        thread.start()
+
+    def _clear_update_check_thread(self):
+        thread = getattr(self, "_update_check_thread", None)
+        self._update_check_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def _on_update_check_done(self, manual, release, error):
+        if error:
+            if manual:
+                QMessageBox.warning(self, "Couldn't check for updates", error)
+            return
+        if release is None or not updater.is_newer(release.version):
+            if manual:
+                QMessageBox.information(
+                    self, "You're up to date", f"ScriptLiner {APP_VERSION} is the latest version."
+                )
+            return
+        self._offer_update(release)
+
+    def _offer_update(self, release):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Update available")
+        box.setText(f"ScriptLiner {release.version} is available (you have {APP_VERSION}).")
+        if release.notes:
+            box.setDetailedText(release.notes)
+        can_install = release.asset_url is not None and updater.current_app_bundle() is not None
+        install_button = box.addButton(
+            "Update Now" if can_install else "Open Download Page", QMessageBox.AcceptRole
+        )
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not install_button:
+            return
+        if can_install:
+            self._download_and_install_update(release)
+        else:
+            QDesktopServices.openUrl(QUrl(release.page_url))
+
+    def _download_and_install_update(self, release):
+        bundle = updater.current_app_bundle()
+        if bundle is None:
+            return
+        if not updater.can_self_update(bundle):
+            QMessageBox.information(
+                self, "Update needs a manual install",
+                "ScriptLiner is installed somewhere this account can't modify, so it can't "
+                "update itself. The download page will open instead.",
+            )
+            QDesktopServices.openUrl(QUrl(release.page_url))
+            return
+
+        download_dir = tempfile.mkdtemp(prefix="scriptliner-update-")
+        zip_path = str(Path(download_dir) / updater.MAC_ASSET_NAME)
+        progress = QProgressDialog("Downloading update...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Updating ScriptLiner")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+
+        thread = updater.UpdateDownloadThread(release.asset_url, zip_path, self)
+        self._update_download_thread = thread
+
+        def on_progress(done, total):
+            total = total or release.asset_size
+            if total:
+                progress.setValue(min(99, int(done * 100 / total)))
+
+        def cleanup():
+            progress.close()
+            self._update_download_thread = None
+            thread.deleteLater()
+
+        def on_failed(message):
+            cleanup()
+            shutil.rmtree(download_dir, ignore_errors=True)
+            if "cancelled" not in message.lower():
+                QMessageBox.warning(self, "Update failed", message)
+
+        def on_downloaded(path):
+            cleanup()
+            self._install_downloaded_update(path, bundle, download_dir)
+
+        progress.canceled.connect(thread.cancel)
+        thread.progress.connect(on_progress)
+        thread.failed.connect(on_failed)
+        thread.finished_ok.connect(on_downloaded)
+        thread.start()
+
+    def _install_downloaded_update(self, zip_path, bundle, download_dir):
+        try:
+            new_app, work_dir = updater.prepare_update(zip_path, bundle)
+        except (updater.UpdateError, OSError) as exc:
+            shutil.rmtree(download_dir, ignore_errors=True)
+            QMessageBox.warning(self, "Update failed", str(exc))
+            return
+        shutil.rmtree(download_dir, ignore_errors=True)
+        # Save first so nothing is lost - the relaunched app reopens the
+        # last project automatically (see _restore_last_session).
+        self._autosave()
+        try:
+            updater.launch_swap_and_relaunch(new_app, bundle, work_dir)
+        except OSError as exc:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            QMessageBox.warning(self, "Update failed", str(exc))
+            return
+        self.close()
+        QApplication.quit()
 
     def show_guide(self):
         """Help > View Guide: a read-only copy of the first-launch guide

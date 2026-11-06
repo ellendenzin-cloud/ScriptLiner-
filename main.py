@@ -8,9 +8,9 @@ from PySide6.QtWidgets import QApplication
 from app.window import MainWindow, LOGO_SQUARE_PATH, LOGO_LONG_PATH, PROGRAM_FILES_DIR, BETA_TERMS_PATH
 from app.studio_link import register_app
 from app.terms_dialog import TermsDialog
+from app.version import APP_VERSION
 from app.theme import load_fonts, enable_dpi_awareness
 
-APP_VERSION = "0.15"
 
 # Must happen before QApplication is constructed - see theme.py docstring
 # for why this can't just be left to Qt's own high-DPI scaling.

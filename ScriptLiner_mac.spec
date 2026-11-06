@@ -52,7 +52,7 @@ app = BUNDLE(
     icon='assets/ScriptLinerLogo_Square.icns',
     bundle_identifier='com.scriptstudio.scriptliner',
     info_plist={
-        'CFBundleShortVersionString': '0.19',
+        'CFBundleShortVersionString': '0.20',
         'NSHighResolutionCapable': True,
     },
 )

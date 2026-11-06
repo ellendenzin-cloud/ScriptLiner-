@@ -12,6 +12,7 @@ from app.window import (
     PAGE_DARK_BG,
     PAGE_DARK_INK,
     PX_PER_INCH,
+    _points_for_pixels,
     _render_paragraphs_into_document,
 )
 
@@ -31,7 +32,9 @@ class GuideViewerDialog(QDialog):
         self.practice_requested = False
 
         browser = QTextBrowser()
-        browser.setFont(QFont(BASE_FONT_FAMILY, 11))
+        reading_font = QFont(BASE_FONT_FAMILY)
+        reading_font.setPointSizeF(_points_for_pixels(11 * PX_PER_INCH / 72))
+        browser.setFont(reading_font)
         background, ink = (PAGE_DARK_BG, PAGE_DARK_INK) if dark_page else ("#ffffff", "#000000")
         browser.setStyleSheet(f"background-color: {background}; color: {ink};")
         document: QTextDocument = browser.document()

@@ -22,7 +22,8 @@ from app.shot import Segment
 from app.window import (
     ScriptTextEdit,
     BASE_FONT_FAMILY,
-    BASE_FONT_POINT_SIZE,
+    BASE_FONT_PX,
+    _points_for_pixels,
     PAGE_WIDTH_PX,
     PAGE_MARGIN_LEFT_PX,
     PAGE_MARGIN_RIGHT_PX,
@@ -186,7 +187,7 @@ class MergeProjectsDialog(QDialog):
         scale = self.VIEW_SCALE
         view.scale = scale
         scaled_font = QFont(BASE_FONT_FAMILY)
-        scaled_font.setPointSizeF(BASE_FONT_POINT_SIZE * scale)
+        scaled_font.setPointSizeF(_points_for_pixels(BASE_FONT_PX * scale))
         view.setFont(scaled_font)
         view._apply_scale_to_lane_geometry()
 

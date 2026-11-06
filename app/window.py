@@ -42,6 +42,7 @@ from PySide6.QtGui import (
     QFont,
     QKeySequence,
     QPageSize,
+    QGuiApplication,
     QPalette,
     QAbstractTextDocumentLayout,
     QShortcut,
@@ -93,6 +94,21 @@ BETA_TERMS_PATH = ASSETS_DIR / "beta_terms.md"
 PX_PER_INCH = 96
 BASE_FONT_FAMILY = "Courier New"
 BASE_FONT_POINT_SIZE = 12
+# The same size in the document's own pixel units (12pt at 96px per inch).
+BASE_FONT_PX = BASE_FONT_POINT_SIZE * PX_PER_INCH / 72
+
+
+def _points_for_pixels(pixels):
+    """The QFont point size that makes a QTextDocument render text exactly
+    `pixels` tall. A document turns a font's points into pixels using the
+    screen's logical DPI - 96 on Windows but 72 on a Mac - so a plain "12pt"
+    came out 25% smaller on a Mac (9pt on the exported page, and a page
+    that held far more lines than a real screenplay page). Sizing by pixels
+    through this keeps the on-screen page and the export identical on
+    every computer."""
+    screen = QGuiApplication.primaryScreen()
+    dpi = screen.logicalDotsPerInchY() if screen is not None else 96.0
+    return pixels * 72.0 / (dpi or 96.0)
 
 
 def IN(inches: float) -> int:
@@ -2829,7 +2845,9 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         self.script_view = ScriptTextEdit()
-        self.script_view.setFont(QFont(BASE_FONT_FAMILY, BASE_FONT_POINT_SIZE))
+        initial_font = QFont(BASE_FONT_FAMILY)
+        initial_font.setPointSizeF(_points_for_pixels(BASE_FONT_PX))
+        self.script_view.setFont(initial_font)
         self.script_view.shots_provider = lambda: [
             (s, self.shot_lanes.get(s.shot_id, 0)) for s in self.shots
         ]
@@ -3425,7 +3443,7 @@ class MainWindow(QMainWindow):
             return
         self.script_view.scale = new_scale
         scaled_font = QFont(BASE_FONT_FAMILY)
-        scaled_font.setPointSizeF(BASE_FONT_POINT_SIZE * new_scale)
+        scaled_font.setPointSizeF(_points_for_pixels(BASE_FONT_PX * new_scale))
         self.script_view.setFont(scaled_font)
         if self.loaded_paragraphs:
             self.script_view.clear()
@@ -4876,8 +4894,11 @@ class MainWindow(QMainWindow):
         # 10x too large via direct drawText(). Every direct drawText()
         # call below (shot labels, page numbers, the key legend) must use
         # base_font, never scaled_font.
+        # Sized by pixels, not points - see _points_for_pixels. base_font
+        # above stays in true points: direct painter.drawText onto the
+        # printer already resolves those against the printer's own DPI.
         scaled_font = QFont(base_font)
-        scaled_font.setPointSizeF(base_font.pointSizeF() * scale)
+        scaled_font.setPointSizeF(_points_for_pixels(BASE_FONT_PX * scale))
         # A bare QPainter on a QPrinter has no widget to inherit a font
         # from, so without this it would silently fall back to the
         # system default font.
@@ -4986,7 +5007,7 @@ class MainWindow(QMainWindow):
 
             def entry_document(shot):
                 body_font = QFont(base_font)
-                body_font.setPointSizeF(base_font.pointSizeF() * 0.85 * scale)
+                body_font.setPointSizeF(_points_for_pixels(BASE_FONT_PX * 0.85 * scale))
                 entry_doc = QTextDocument()
                 entry_doc.setDefaultFont(body_font)
                 entry_doc.setDocumentMargin(0)

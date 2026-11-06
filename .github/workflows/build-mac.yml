@@ -67,9 +67,18 @@ jobs:
 
       - name: Smoke-test the packaged app's update check
         run: |
-          OUT=$(dist/ScriptLiner.app/Contents/MacOS/ScriptLiner --check-update 2>&1) || { echo "$OUT"; exit 1; }
+          # On failure the app's output is also written into an error
+          # annotation, which (unlike the step log) is visible to anyone.
+          fail() {
+            echo "$1"
+            MSG=$(printf '%s' "$1" | tail -c 1500 | sed ':a;N;$!ba;s/%/%25/g;s//%0D/g;s/
+/%0A/g')
+            echo "::error title=Packaged app update check failed::$MSG"
+            exit 1
+          }
+          OUT=$(dist/ScriptLiner.app/Contents/MacOS/ScriptLiner --check-update 2>&1) || fail "exit code $?: $OUT"
           echo "$OUT"
-          echo "$OUT" | grep -q "update-check ok"
+          echo "$OUT" | grep -q "update-check ok" || fail "no success line in: $OUT"
 
       - name: Package as a .dmg
         run: |

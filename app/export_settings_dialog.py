@@ -66,6 +66,12 @@ class ExportSettingsDialog(QDialog):
             "Shots are told apart by tick-mark shape instead of color."
         )
 
+        self.back_notes_check = QCheckBox("Shot notes on the back of each page")
+        self.back_notes_check.setToolTip(
+            "Adds a page after every script page listing that page's shots and their "
+            "notes. Print double-sided and each page's notes sit on its back."
+        )
+
         self.header_check = QCheckBox("Add a page header")
         self.color_combo = QComboBox()
         self.color_combo.addItems(REVISION_COLORS)
@@ -91,6 +97,7 @@ class ExportSettingsDialog(QDialog):
 
         options_layout = QVBoxLayout()
         options_layout.addWidget(self.black_and_white_check)
+        options_layout.addWidget(self.back_notes_check)
         options_layout.addSpacing(10)
         options_layout.addWidget(self.header_check)
         options_layout.addLayout(header_fields_row)
@@ -149,6 +156,7 @@ class ExportSettingsDialog(QDialog):
         self._result_settings = {
             "scene_filter": scene_filter,
             "black_and_white": self.black_and_white_check.isChecked(),
+            "back_notes": self.back_notes_check.isChecked(),
             "header_text": header_text,
         }
         self.accept()

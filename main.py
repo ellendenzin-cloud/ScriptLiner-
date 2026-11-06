@@ -10,7 +10,7 @@ from app.studio_link import register_app
 from app.terms_dialog import TermsDialog
 from app.theme import load_fonts, enable_dpi_awareness
 
-APP_VERSION = "0.14"
+APP_VERSION = "0.15"
 
 # Must happen before QApplication is constructed - see theme.py docstring
 # for why this can't just be left to Qt's own high-DPI scaling.

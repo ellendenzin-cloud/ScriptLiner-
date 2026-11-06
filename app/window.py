@@ -49,6 +49,7 @@ from app.shot import Shot
 from app.inspector_panel import ShotInspectorPanel
 from app.shortcut_button import make_shortcut_button
 from app.script_import import import_fdx, import_fadein, import_fountain, import_rtf, import_celtx
+from app.document_import import import_document
 from app.project_io import dict_to_shots, save_project, load_project_data
 from app.studio_link import ensure_program_files_dir
 from app import theme
@@ -482,8 +483,21 @@ SCREENPLAY_STYLE_MAP = {
     "Transition":    dict(left_in=4.0, right_in=0.4, align=Qt.AlignRight, case="upper", space_before_pt=11),
     "Shot":          dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="upper", space_before_pt=22),
     "General":       dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=0),
+    # Non-screenplay documents (beat sheets, treatments, outlines) from
+    # File > Import Document - see app/document_import.py. "hanging_in"
+    # indents wrapped lines past a list marker instead of back under it.
+    "Doc Title":     dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=22),
+    "Doc Section":   dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=22),
+    "Doc Heading":   dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=14),
+    "Doc Text":      dict(left_in=0.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=11),
+    "Doc List 1":    dict(left_in=0.2, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=5, hanging_in=0.3),
+    "Doc List 2":    dict(left_in=0.6, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=3, hanging_in=0.3),
+    "Doc List 3":    dict(left_in=1.0, right_in=0.0, align=Qt.AlignLeft, case="as_is", space_before_pt=3, hanging_in=0.3),
 }
 DEFAULT_SCREENPLAY_STYLE = SCREENPLAY_STYLE_MAP["Action"]
+# Paragraph types that start a new numbered scene (screenplay) or section
+# (imported document) - shot ids like "12A" are numbered off these.
+SECTION_HEADING_TYPES = ("Scene Heading", "Doc Section")
 
 LANE_START_X = 15
 LANE_WIDTH = 20
@@ -579,7 +593,10 @@ def _render_paragraphs_into_document(doc, paragraphs, px_per_inch):
         style = SCREENPLAY_STYLE_MAP.get(p_type, DEFAULT_SCREENPLAY_STYLE)
 
         block_fmt = QTextBlockFormat()
-        block_fmt.setLeftMargin(in_(style["left_in"]))
+        hanging_in = style.get("hanging_in", 0.0)
+        block_fmt.setLeftMargin(in_(style["left_in"] + hanging_in))
+        if hanging_in:
+            block_fmt.setTextIndent(-in_(hanging_in))
         block_fmt.setRightMargin(in_(style["right_in"]))
         block_fmt.setAlignment(style["align"])
         block_fmt.setTopMargin(pt_(style["space_before_pt"]) if wrote_content else 0)
@@ -649,7 +666,7 @@ def _compute_scene_numbers(doc, loaded_paragraphs):
                 block = block.next()
             if not block.isValid():
                 break
-            if para[0] == "Scene Heading":
+            if para[0] in SECTION_HEADING_TYPES:
                 scene_count += 1
                 explicit_number = para[2] if len(para) > 2 else None
                 if explicit_number and str(explicit_number).isdigit():
@@ -1199,6 +1216,9 @@ _SYNTHETIC_BLOCK_PROPERTY = QTextFormat.UserProperty + 4
 # following them - a page break is never allowed to leave one of these
 # stranded alone at the bottom of a page (see _apply_page_gaps_to_document).
 CUE_TYPES = {"Character", "Parenthetical"}
+# Same idea for imported-document headings: a heading is never left
+# alone at the bottom of a page with its first paragraph on the next.
+KEEP_WITH_NEXT_TYPES = CUE_TYPES | {"Doc Title", "Doc Section", "Doc Heading"}
 # A split that would leave fewer than this many characters on either
 # side isn't worth it - reject it (fall back to moving the whole
 # paragraph) rather than producing a "(MORE)" after two words.
@@ -1552,7 +1572,13 @@ def _apply_page_gaps_to_document(doc, content_height, total_gap, px_per_inch=PX_
             # Fade In-style.
             adjusted = block
             prev = adjusted.previous()
-            while prev.isValid() and para_type(prev) in CUE_TYPES:
+            while (
+                prev.isValid()
+                and para_type(prev) in KEEP_WITH_NEXT_TYPES
+                # Never pull back the page's own first block - that would
+                # put a break at the very top of a page and waste it.
+                and doc.documentLayout().blockBoundingRect(prev).top() > current_page_top
+            ):
                 adjusted = prev
                 prev = adjusted.previous()
 
@@ -1592,6 +1618,31 @@ def _apply_page_gaps_to_document(doc, content_height, total_gap, px_per_inch=PX_
         content_starts.append(doc.documentLayout().blockBoundingRect(block).top())
 
     return content_starts, more_cont_speakers, split_map
+
+
+def _shot_notes_html(shot):
+    """Rich-text block for one shot on a back-of-page notes page: the id
+    in bold, its type/lens/movement on one line, then description,
+    notes, and (greyed, italic) an excerpt of the lines it covers."""
+    from html import escape
+
+    def block(text):
+        return escape(text.strip()).replace("\n", "<br>")
+
+    details = " / ".join(
+        part.strip() for part in (shot.shot_type, shot.lens, shot.camera_movement) if part and part.strip()
+    )
+    parts = [f"<b>{escape(shot.shot_id)}</b>" + (f" &nbsp;&nbsp;{escape(details)}" if details else "")]
+    if shot.description and shot.description.strip():
+        parts.append(block(shot.description))
+    if shot.notes and shot.notes.strip():
+        parts.append("<i>Notes:</i> " + block(shot.notes))
+    excerpt = " ".join((shot.text or "").split())
+    if excerpt:
+        if len(excerpt) > 110:
+            excerpt = excerpt[:107].rstrip() + "..."
+        parts.append(f'<span style="color:#888888"><i>\u201c{escape(excerpt)}\u201d</i></span>')
+    return "<p style='margin:0'>" + "<br>".join(parts) + "</p>"
 
 
 class ScriptTextEdit(QTextEdit):
@@ -2812,7 +2863,14 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("Import Script...")
         open_action.triggered.connect(self.open_script)
 
-        pdf_action = file_menu.addAction("Open PDF  [coming soon]")
+        document_action = file_menu.addAction("Import Document...")
+        document_action.setToolTip(
+            "Import a Word document, PDF, or text file that isn't screenplay-formatted - "
+            "a beat sheet, treatment, or outline."
+        )
+        document_action.triggered.connect(self.open_document)
+
+        pdf_action = file_menu.addAction("Open Screenplay PDF  [coming soon]")
         pdf_action.triggered.connect(self.open_unsupported_format)
 
         mmx_action = file_menu.addAction("Open Movie Magic (.mmx)  [coming soon]")
@@ -2842,8 +2900,45 @@ class MainWindow(QMainWindow):
         self._shortcut_objects["settings"] = settings_action
 
         help_menu = self.menuBar().addMenu("Help")
+        guide_action = help_menu.addAction("View Guide")
+        guide_action.setToolTip("Read the walkthrough that opens the first time ScriptLiner launches.")
+        guide_action.triggered.connect(self.show_guide)
         feedback_action = help_menu.addAction("Send Feedback...")
         feedback_action.triggered.connect(self._open_feedback_form)
+
+    def show_guide(self):
+        """Help > View Guide: a read-only copy of the first-launch guide
+        that never touches the open project. Its "Open as Practice
+        Script" button is the only way it replaces the current script,
+        and that confirms first if there's anything to lose."""
+        from app.guide_dialog import GuideViewerDialog
+
+        if not GUIDE_SCRIPT_PATH.exists():
+            QMessageBox.information(self, "Guide not found", "This build doesn't include the guide file.")
+            return
+        try:
+            paragraphs = self._import_paragraphs_from_path(str(GUIDE_SCRIPT_PATH))
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Could not open the guide", str(exc))
+            return
+        if not paragraphs:
+            return
+
+        dialog = GuideViewerDialog(paragraphs, dark_page=(self.theme == "dark_full"), parent=self)
+        dialog.exec()
+        if not dialog.practice_requested:
+            return
+        if self._dirty or self.shots:
+            answer = QMessageBox.question(
+                self, "Replace the current script?",
+                "Opening the guide as a practice script replaces the script and shots currently "
+                "open. Unsaved changes will be lost.\n\nContinue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._load_structured_script(paragraphs)
+        self.statusBar().showMessage("Opened the guide as a practice script.", 4000)
 
     def _open_feedback_form(self):
         """Opens the Microsoft Forms feedback form (bug report / feature
@@ -3132,6 +3227,13 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     SCRIPT_FILE_FILTER = "Screenplay Files (*.fountain *.txt *.fdx *.fadein *.xml *.rtf *.celtx);;All Files (*)"
+    DOCUMENT_FILE_FILTER = "Documents (*.docx *.pdf *.txt);;All Files (*)"
+    # Update Script has to accept either kind - a project built from an
+    # imported document is revised with a newer version of that document.
+    UPDATE_FILE_FILTER = (
+        "Screenplay and Document Files (*.fountain *.txt *.fdx *.fadein *.xml *.rtf *.celtx *.docx *.pdf);;"
+        "All Files (*)"
+    )
 
     @staticmethod
     def _import_paragraphs_from_path(path: str):
@@ -3152,6 +3254,10 @@ class MainWindow(QMainWindow):
             return import_rtf(path)
         if lower.endswith(".celtx"):
             return import_celtx(path)
+        if lower.endswith((".docx", ".pdf")):
+            # Not screenplay-formatted - imported as a plain document
+            # (see app/document_import.py).
+            return import_document(path)
         return None
 
     def _read_script_text_from_path(self, path: str):
@@ -3206,13 +3312,34 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open file", str(exc))
             return
 
+    def open_document(self):
+        """File > Import Document...: brings in a Word (.docx), PDF, or
+        plain-text document that ISN'T screenplay-formatted - a beat
+        sheet, treatment, outline, shot list - so it can be lined with
+        shots the same way a script is. Each top-level heading becomes a
+        numbered section (the equivalent of a scene) that shot ids like
+        "2B" are numbered off."""
+        path, _ = QFileDialog.getOpenFileName(self, "Import Document", "", self.DOCUMENT_FILE_FILTER)
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            paragraphs = import_document(path)
+        except (OSError, ValueError) as exc:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "Could not import document", str(exc))
+            return
+        QApplication.restoreOverrideCursor()
+        self._load_structured_script(paragraphs)
+        self.statusBar().showMessage(f"Imported document {Path(path).name}", 4000)
+
     def start_update_script(self):
         """"Update Script..." entry point: pick a new revision of the
         script, then review it side by side with the current one -
         shots whose own text is untouched transfer automatically, and
         anything else has to be placed by hand before the swap can be
         confirmed (see UpdateScriptDialog)."""
-        path, _ = QFileDialog.getOpenFileName(self, "Update Script - Select New Version", "", self.SCRIPT_FILE_FILTER)
+        path, _ = QFileDialog.getOpenFileName(self, "Update Script - Select New Version", "", self.UPDATE_FILE_FILTER)
         if not path:
             return
 
@@ -3316,7 +3443,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Not available yet",
-            "PDF and Movie Magic (.mmx) import haven't been built yet - Movie "
+            "Screenplay-formatted PDF and Movie Magic (.mmx) import haven't been built yet "
+            "(a PDF or Word file that isn't a screenplay - a beat sheet, say - can be "
+            "brought in with File > Import Document). Movie "
             "Magic's file format isn't something I have reliable documented "
             "knowledge of, so it needs a real sample file to build against "
             "correctly (the same way the .fadein and .rtf importers were). "
@@ -3456,7 +3585,7 @@ class MainWindow(QMainWindow):
                 if i > paragraph_index:
                     break
                 p_type = para[0]
-                if p_type != "Scene Heading":
+                if p_type not in SECTION_HEADING_TYPES:
                     continue
                 scene_count += 1
                 explicit_number = para[2] if len(para) > 2 else None
@@ -4131,11 +4260,18 @@ class MainWindow(QMainWindow):
         - "header_text": stamped at the top of every exported page (e.g.
           "Goldenrod - 7/28/26") - purely a label, this never tints the
           page background (that's what actually printing on colored
-          paper stock is for)."""
+          paper stock is for).
+        - "back_notes": after every script page, adds a page listing the
+          shots drawn on it (type/lens/movement, description, notes) -
+          meant for double-sided printing, so each page's shot notes sit
+          on the back of that page. Always at least one notes page per
+          script page, padded to an odd count when a page's notes spill
+          onto several, so the NEXT script page still lands on a front."""
         export_settings = export_settings or {}
         scene_filter = export_settings.get("scene_filter")
         black_and_white = bool(export_settings.get("black_and_white"))
         header_text = export_settings.get("header_text") or None
+        back_notes = bool(export_settings.get("back_notes"))
 
         self._recompute_lanes()
 
@@ -4225,6 +4361,103 @@ class MainWindow(QMainWindow):
         # (character offset -> absolute pixel Y) can't be skipped.
         scene_number_ys = [(_absolute_y_for_position(doc, position), number) for position, number in scene_numbers]
 
+        def draw_header_and_watermark(avoid_bottom_right):
+            if header_text:
+                header_font = QFont(base_font)
+                header_font.setBold(True)
+                painter.setFont(header_font)
+                painter.setPen(QColor("#000000"))
+                header_width = painter.fontMetrics().horizontalAdvance(header_text)
+                header_x = (page_width_at_dpi - header_width) / 2
+                painter.drawText(round(header_x), round(0.5 * px_per_inch), header_text)
+                painter.setFont(base_font)
+
+            # "Made with ScriptLiner" watermark: small, light, bold,
+            # bottom-right by default - moves to the bottom-left instead
+            # whenever the Key legend is ALSO drawn in that same corner
+            # on this page, so the two never overlap regardless of where
+            # the user has positioned the Key.
+            watermark_font = QFont(base_font)
+            watermark_font.setPointSizeF(max(6.0, base_font.pointSizeF() * 0.6))
+            watermark_font.setBold(True)
+            painter.setFont(watermark_font)
+            painter.setPen(QColor("#aaaaaa"))
+            watermark_text = "Made with ScriptLiner"
+            watermark_width = painter.fontMetrics().horizontalAdvance(watermark_text)
+            watermark_y = page_height_at_dpi - round(0.35 * px_per_inch)
+            if avoid_bottom_right:
+                watermark_x = round(0.4 * px_per_inch)
+            else:
+                watermark_x = page_width_at_dpi - round(0.4 * px_per_inch) - watermark_width
+            painter.drawText(round(watermark_x), round(watermark_y), watermark_text)
+            painter.setFont(base_font)
+
+        def draw_shot_notes_pages(page_number, page_shots):
+            """The back-of-page notes for script page `page_number` (see
+            "back_notes"). Returns how many printed pages it used."""
+            margin = round(1.0 * px_per_inch)
+            text_width = page_width_at_dpi - 2 * margin
+            top_y = round(1.4 * px_per_inch)
+            bottom_y = page_height_at_dpi - round(0.9 * px_per_inch)
+            page_space = bottom_y - top_y
+
+            def start_page():
+                printer.newPage()
+                title_font = QFont(base_font)
+                title_font.setBold(True)
+                painter.setFont(title_font)
+                painter.setPen(QColor("#000000"))
+                painter.drawText(margin, round(1.0 * px_per_inch), f"Page {page_number} \u2014 Shot Notes")
+                painter.setFont(base_font)
+                draw_header_and_watermark(False)
+                return top_y
+
+            def entry_document(shot):
+                body_font = QFont(base_font)
+                body_font.setPointSizeF(base_font.pointSizeF() * 0.85 * scale)
+                entry_doc = QTextDocument()
+                entry_doc.setDefaultFont(body_font)
+                entry_doc.setDocumentMargin(0)
+                entry_doc.setTextWidth(text_width)
+                entry_doc.setHtml(_shot_notes_html(shot))
+                return entry_doc
+
+            used = 1
+            y = start_page()
+            if not page_shots:
+                painter.setPen(QColor("#999999"))
+                painter.drawText(margin, y + painter.fontMetrics().ascent(), "No shots on this page.")
+                return used
+
+            gap = round(0.18 * px_per_inch)
+            for shot in page_shots:
+                entry_doc = entry_document(shot)
+                height = entry_doc.size().height()
+                if height > bottom_y - y and height <= page_space and y > top_y:
+                    y = start_page()
+                    used += 1
+                offset = 0.0
+                while True:
+                    chunk = min(height - offset, bottom_y - y)
+                    painter.save()
+                    painter.setClipRect(margin, round(y), text_width, round(chunk) + 1)
+                    painter.translate(margin, y - offset)
+                    entry_doc.drawContents(painter, QRectF(0, offset, text_width, chunk))
+                    painter.restore()
+                    painter.setFont(base_font)
+                    offset += chunk
+                    y += chunk
+                    if offset >= height - 0.5:
+                        break
+                    y = start_page()
+                    used += 1
+                y += gap
+
+            if used % 2 == 0:
+                printer.newPage()
+                used += 1
+            return used
+
         key_overflowed_columns = False
         any_page_output = False
         for page_index, content_start in enumerate(content_starts):
@@ -4292,6 +4525,7 @@ class MainWindow(QMainWindow):
                 contd_y = content_start - MORE_CONTD_MARGIN_OFFSET_PX * scale
                 painter.drawText(round(contd_x), round(contd_y), f"{more_speakers[page_index - 1]} (CONT'D)")
 
+            shots_on_page = []
             for shot, lane in shots_with_lanes:
                 segs = []
                 for seg_start, seg_end in sorted(shot.all_ranges()):
@@ -4311,6 +4545,7 @@ class MainWindow(QMainWindow):
                     # Nothing of this shot - not even a mid-shot gap between
                     # two segments - actually falls on this page.
                     continue
+                shots_on_page.append((shot, max(segs[visible_indices[0]][0], content_start)))
 
                 x = lane_start_x + (lane % max_lanes) * lane_width
 
@@ -4412,35 +4647,11 @@ class MainWindow(QMainWindow):
                 label_x = page_width_at_dpi - round(1.0 * px_per_inch) - label_width
                 painter.drawText(round(label_x), round(0.5 * px_per_inch), label)
 
-            if header_text:
-                header_font = QFont(base_font)
-                header_font.setBold(True)
-                painter.setFont(header_font)
-                painter.setPen(QColor("#000000"))
-                header_width = painter.fontMetrics().horizontalAdvance(header_text)
-                header_x = (page_width_at_dpi - header_width) / 2
-                painter.drawText(round(header_x), round(0.5 * px_per_inch), header_text)
-                painter.setFont(base_font)
+            draw_header_and_watermark(key_on_this_page and self.key_box_position == "bottom_right")
 
-            # "Made with ScriptLiner" watermark: small, light, bold,
-            # bottom-right by default - moves to the bottom-left instead
-            # whenever the Key legend is ALSO drawn in that same corner
-            # on this page (see key_on_this_page above), so the two never
-            # overlap regardless of where the user has positioned the Key.
-            watermark_font = QFont(base_font)
-            watermark_font.setPointSizeF(max(6.0, base_font.pointSizeF() * 0.6))
-            watermark_font.setBold(True)
-            painter.setFont(watermark_font)
-            painter.setPen(QColor("#aaaaaa"))
-            watermark_text = "Made with ScriptLiner"
-            watermark_width = painter.fontMetrics().horizontalAdvance(watermark_text)
-            watermark_y = page_height_at_dpi - round(0.35 * px_per_inch)
-            if key_on_this_page and self.key_box_position == "bottom_right":
-                watermark_x = round(0.4 * px_per_inch)
-            else:
-                watermark_x = page_width_at_dpi - round(0.4 * px_per_inch) - watermark_width
-            painter.drawText(round(watermark_x), round(watermark_y), watermark_text)
-            painter.setFont(base_font)
+            if back_notes:
+                shots_on_page.sort(key=lambda entry: entry[1])
+                draw_shot_notes_pages(page_index + 1, [entry[0] for entry in shots_on_page])
 
         painter.end()
 

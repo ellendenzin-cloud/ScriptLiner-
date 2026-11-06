@@ -42,6 +42,8 @@ from PySide6.QtGui import (
     QFont,
     QKeySequence,
     QPageSize,
+    QPalette,
+    QAbstractTextDocumentLayout,
     QShortcut,
     QIcon,
     QPixmap,
@@ -1760,6 +1762,29 @@ def _apply_page_gaps_to_document(doc, content_height, total_gap, px_per_inch=PX_
         content_starts.append(doc.documentLayout().blockBoundingRect(block).top())
 
     return content_starts, more_cont_speakers, split_map
+
+
+def _draw_document_in_ink(painter, doc, rect, ink="#000000"):
+    """QTextDocument.drawContents, but with the text color fixed instead
+    of taken from the computer's palette. drawContents paints any text
+    that doesn't carry its own color in the application palette's Text
+    color - which is WHITE on a Mac (or PC) in Dark Mode, so an exported
+    PDF came out with white-on-white script text: invisible on paper, yet
+    still selectable. A PDF is always black ink on white paper (see
+    MainWindow._write_lined_pdf), whatever the system appearance."""
+    context = QAbstractTextDocumentLayout.PaintContext()
+    palette = QPalette()
+    ink_color = QColor(ink)
+    for role in (
+        QPalette.Text, QPalette.WindowText, QPalette.ButtonText, QPalette.BrightText,
+        QPalette.PlaceholderText,
+    ):
+        palette.setColor(role, ink_color)
+    for role in (QPalette.Base, QPalette.Window, QPalette.Button):
+        palette.setColor(role, QColor("#ffffff"))
+    context.palette = palette
+    context.clip = rect
+    doc.documentLayout().draw(painter, context)
 
 
 def _shot_notes_html(shot):
@@ -4989,7 +5014,7 @@ class MainWindow(QMainWindow):
                     painter.save()
                     painter.setClipRect(margin, round(y), text_width, round(chunk) + 1)
                     painter.translate(margin, y - offset)
-                    entry_doc.drawContents(painter, QRectF(0, offset, text_width, chunk))
+                    _draw_document_in_ink(painter, entry_doc, QRectF(0, offset, text_width, chunk))
                     painter.restore()
                     painter.setFont(base_font)
                     offset += chunk
@@ -5032,8 +5057,8 @@ class MainWindow(QMainWindow):
             painter.setClipRect(0, 0, page_width_at_dpi, capture_height)
             painter.translate(0, -page_outer_top)
 
-            doc.drawContents(
-                painter, QRectF(0, page_outer_top, page_width_at_dpi, capture_height)
+            _draw_document_in_ink(
+                painter, doc, QRectF(0, page_outer_top, page_width_at_dpi, capture_height)
             )
             # QTextDocument's own rendering sets the painter's font per
             # text run as it draws and leaves it at whatever the LAST run

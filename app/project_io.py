@@ -43,6 +43,7 @@ def project_to_dict(window) -> dict:
         "line_style_labels": window.line_style_labels,
         "multi_style_mode": window.multi_style_mode,
         "page_gap_style": window.page_gap_style,
+        "lane_count": window.lane_count,
         "active_lanes": sorted(window.active_lanes),
         "auto_sort_shots": window.auto_sort_shots,
     }

@@ -30,7 +30,8 @@ from app.window import (
     KEY_BOX_POSITIONS,
     KEY_BOX_POSITION_DEFAULT,
     SHORTCUT_ACTIONS,
-    MAX_LANES,
+    DEFAULT_LANE_COUNT,
+    MAX_LANE_COUNT,
     MAX_PALETTE_COLORS,
     DEFAULT_OVERLAY_OPACITY,
     SHOT_COLORS,
@@ -258,17 +259,27 @@ class SettingsDialog(QDialog):
         lanes_group = QGroupBox("Lanes")
         lanes_layout = QVBoxLayout(lanes_group)
 
+        count_row = QHBoxLayout()
+        count_row.addWidget(QLabel("Number of lanes:"))
+        self.lane_count_spin = QSpinBox()
+        self.lane_count_spin.setRange(1, MAX_LANE_COUNT)
+        self.lane_count_spin.setValue(getattr(window, "lane_count", DEFAULT_LANE_COUNT))
+        self.lane_count_spin.valueChanged.connect(self._rebuild_lane_checks)
+        count_row.addWidget(self.lane_count_spin)
+        count_note = QLabel(
+            f"({DEFAULT_LANE_COUNT} is the normal amount, up to {MAX_LANE_COUNT} - "
+            "each extra lane makes every line narrower so they all fit)"
+        )
+        count_note.setWordWrap(True)
+        count_row.addWidget(count_note, 1)
+        lanes_layout.addLayout(count_row)
+
         lanes_layout.addWidget(QLabel("Active lanes:"))
-        active_lanes_row = QHBoxLayout()
+        self._active_lanes_row = QHBoxLayout()
         self._lane_checks = []
-        current_active = getattr(window, "active_lanes", set(range(MAX_LANES)))
-        for i in range(MAX_LANES):
-            cb = QCheckBox(str(i + 1))
-            cb.setChecked(i in current_active)
-            self._lane_checks.append(cb)
-            active_lanes_row.addWidget(cb)
-        active_lanes_row.addStretch()
-        lanes_layout.addLayout(active_lanes_row)
+        self._initial_active = set(getattr(window, "active_lanes", set(range(DEFAULT_LANE_COUNT))))
+        self._rebuild_lane_checks(self.lane_count_spin.value())
+        lanes_layout.addLayout(self._active_lanes_row)
 
         self.auto_sort_check = QCheckBox(
             "Shots in Alphabetical Order\n"
@@ -382,6 +393,22 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._on_accept_clicked)
         buttons.rejected.connect(self.reject)
         outer_layout.addWidget(buttons)
+
+    def _rebuild_lane_checks(self, count):
+        """One "active" checkbox per lane, keeping what's already ticked;
+        a lane that's newly added starts active."""
+        previous = {i: cb.isChecked() for i, cb in enumerate(self._lane_checks)}
+        while self._active_lanes_row.count():
+            item = self._active_lanes_row.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self._lane_checks = []
+        for i in range(count):
+            cb = QCheckBox(str(i + 1))
+            cb.setChecked(previous.get(i, i in self._initial_active or i >= DEFAULT_LANE_COUNT))
+            self._lane_checks.append(cb)
+            self._active_lanes_row.addWidget(cb)
+        self._active_lanes_row.addStretch()
 
     def _reset_shortcuts_to_defaults(self):
         for action_id, _label, default in SHORTCUT_ACTIONS:
@@ -595,6 +622,7 @@ class SettingsDialog(QDialog):
             w.theme = "dark_ui"
         else:
             w.theme = "light"
+        w.lane_count = self.lane_count_spin.value()
         w.active_lanes = {i for i, cb in enumerate(self._lane_checks) if cb.isChecked()}
         w.auto_sort_shots = self.auto_sort_check.isChecked()
         w.length_sort_shots = self.length_sort_check.isChecked()

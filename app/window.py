@@ -552,6 +552,11 @@ SECTION_HEADING_TYPES = ("Scene Heading", "Doc Section")
 LANE_START_X = 15
 LANE_WIDTH = 20
 MAX_LANES = max(1, (PAGE_MARGIN_LEFT_PX - LANE_START_X) // LANE_WIDTH)
+# Lanes a project starts with (what fits at the normal line spacing), and
+# the most Settings will let you add. Every lane beyond what fits at the
+# normal spacing makes ALL the lines narrower - see _fit_lane_width_to_count.
+DEFAULT_LANE_COUNT = MAX_LANES
+MAX_LANE_COUNT = 10
 CROSS_SIZE = 7
 MIN_LANE_WIDTH = 8
 # Minimum vertical breathing room (unscaled px, at scale=1.0) required
@@ -568,13 +573,13 @@ MIN_LANE_GAP_PX = CROSS_SIZE * 2 + round(BASE_FONT_POINT_SIZE * (PX_PER_INCH / 7
 MAX_UNDO_STEPS = 50
 
 
-def _lane_disabled(index: int, active_lanes) -> bool:
-    """True if `index` is one of the fixed Lane 1-6 slots and the user
-    turned it off in Settings. Indices at or beyond MAX_LANES are always
-    usable - they only exist as overflow when more shots overlap than
-    fit in the 6 nominal lanes, so "disabled" (a concept scoped to the
-    6 numbered lanes shown in Settings) doesn't apply to them."""
-    return index < MAX_LANES and index not in active_lanes
+def _lane_disabled(index: int, active_lanes, lane_count: int = DEFAULT_LANE_COUNT) -> bool:
+    """True if `index` is one of the numbered lanes (1 to lane_count, set in
+    Settings) and the user turned it off there. Indices at or beyond
+    lane_count are always usable - they only exist as overflow when more
+    shots overlap than the numbered lanes hold, so "disabled" (a concept
+    scoped to the lanes shown in Settings) doesn't apply to them."""
+    return index < lane_count and index not in active_lanes
 
 PROJECT_FILE_FILTER = "ScriptLiner Project (*.slproj)"
 AUTOSAVE_INTERVAL_MS = 30_000
@@ -1819,6 +1824,7 @@ class ScriptTextEdit(QTextEdit):
         self.lane_start_x = LANE_START_X
         self.lane_width = LANE_WIDTH
         self.max_lanes = MAX_LANES
+        self.lane_count = DEFAULT_LANE_COUNT  # numbered lanes shown in Settings - see _lane_disabled
         self.cross_size = CROSS_SIZE
         self.line_width = 2
         self._apply_scale_to_lane_geometry()
@@ -1887,7 +1893,13 @@ class ScriptTextEdit(QTextEdit):
         whenever self.scale changes, or after set_lane_capacity() changes
         base_lane_width (a user's manual "Make Lines Smaller" choice)."""
         self.lane_start_x = round(LANE_START_X * self.scale)
-        self.lane_width = max(MIN_LANE_WIDTH, round(self.base_lane_width * self.scale))
+        # The floor scales down with the zoom (but never above its full
+        # size): a flat 8px minimum would stop every lane from fitting once
+        # the view is zoomed far out, since the margin shrinks but the
+        # floor wouldn't.
+        self.lane_width = max(
+            round(MIN_LANE_WIDTH * min(1.0, self.scale)), round(self.base_lane_width * self.scale), 2
+        )
         left_margin_scaled = PAGE_MARGIN_LEFT_PX * self.scale
         self.max_lanes = max(1, int((left_margin_scaled - self.lane_start_x) // self.lane_width))
         self.cross_size = max(3, round(CROSS_SIZE * self.scale))
@@ -1966,11 +1978,11 @@ class ScriptTextEdit(QTextEdit):
         _lane_disabled) onto the nearest enabled one, so a drag can never
         drop a shot somewhere Settings says it shouldn't go."""
         lane = max(0, min(self.max_lanes - 1, lane))
-        if not _lane_disabled(lane, self.active_lanes):
+        if not _lane_disabled(lane, self.active_lanes, self.lane_count):
             return lane
-        for offset in range(1, MAX_LANES + 1):
+        for offset in range(1, MAX_LANE_COUNT + 1):
             for candidate in (lane - offset, lane + offset):
-                if 0 <= candidate < self.max_lanes and not _lane_disabled(candidate, self.active_lanes):
+                if 0 <= candidate < self.max_lanes and not _lane_disabled(candidate, self.active_lanes, self.lane_count):
                     return candidate
         return lane
 
@@ -2453,7 +2465,7 @@ class ScriptTextEdit(QTextEdit):
             for lane_index in range(self.max_lanes):
                 lane_x = self.lane_start_x + lane_index * self.lane_width
                 painter.setPen(
-                    disabled_guide_pen if _lane_disabled(lane_index, self.active_lanes) else guide_pen
+                    disabled_guide_pen if _lane_disabled(lane_index, self.active_lanes, self.lane_count) else guide_pen
                 )
                 painter.drawLine(lane_x, 0, lane_x, self.viewport().height())
 
@@ -2744,7 +2756,8 @@ class MainWindow(QMainWindow):
         # so this remembers the manual layout for when that order is
         # switched off again - see _recompute_lanes.
         self.manual_lanes = {}
-        self.active_lanes = set(range(MAX_LANES))  # which of the 6 nominal lanes are enabled
+        self.lane_count = DEFAULT_LANE_COUNT  # numbered lanes (6 by default, up to MAX_LANE_COUNT) - see Settings
+        self.active_lanes = set(range(DEFAULT_LANE_COUNT))  # which of those lanes are enabled
         self.auto_sort_shots = False  # "Shots in Alphabetical Order" - see _recompute_lanes
         self.length_sort_shots = False  # "Shots by Length" (longest outermost) - see _recompute_lanes
         self.unique_shot_colors = False  # every new shot gets a color nothing else uses yet
@@ -3278,9 +3291,38 @@ class MainWindow(QMainWindow):
 
         dialog = SettingsDialog(self, self)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            before = self._lane_setup()
             dialog.apply_to_window()
+            if self.lane_count != before[2]:
+                self._fit_lane_width_to_count(before[2])
             self._apply_settings_to_view()
             self._dirty = True
+            # Switching an automatic lane order on, off, or between kinds -
+            # or changing the number of lanes - re-packs every shot, which
+            # can need more lanes than the line size chosen earlier ("Make
+            # Lines Smaller") allows for. Ask again rather than leaving
+            # lines silently stacked on top of each other.
+            if self._lane_setup() != before:
+                self._check_lane_overflow(None)
+
+    def _lane_setup(self):
+        return (
+            self.auto_sort_shots, self.length_sort_shots, self.lane_count, frozenset(self.active_lanes),
+        )
+
+    def _fit_lane_width_to_count(self, old_count):
+        """Sizes the lines so `lane_count` lanes fit the margin: more lanes
+        than before can only make lines narrower (never wider than a
+        smaller size already chosen via "Make Lines Smaller"), fewer
+        lanes go back to the normal width."""
+        available = PAGE_MARGIN_LEFT_PX - LANE_START_X
+        fitted = max(MIN_LANE_WIDTH, min(LANE_WIDTH, available // max(1, self.lane_count)))
+        view = self.script_view
+        if self.lane_count > old_count:
+            view.base_lane_width = min(view.base_lane_width, fitted)
+        else:
+            view.base_lane_width = fitted
+        view._apply_scale_to_lane_geometry()
 
     def _apply_theme(self):
         """Applies self.theme: "dark_ui" and "dark_full" both switch the
@@ -3326,6 +3368,7 @@ class MainWindow(QMainWindow):
         self.script_view.shot_type_style_map = self.shot_type_style_map
         self.script_view.multi_style_mode = self.multi_style_mode
         self.script_view.active_lanes = self.active_lanes
+        self.script_view.lane_count = self.lane_count
         self.script_view.auto_sort_shots = self.auto_sort_shots or self.length_sort_shots
         self.script_view.label_every_segment = self.label_every_segment
         self._update_move_shots_availability()
@@ -3475,8 +3518,9 @@ class MainWindow(QMainWindow):
         self.line_style_labels = data.get("line_style_labels") or {}
         self.multi_style_mode = data.get("multi_style_mode") or {}
         self.page_gap_style = data.get("page_gap_style", "gap")
+        self.lane_count = max(1, min(MAX_LANE_COUNT, int(data.get("lane_count") or DEFAULT_LANE_COUNT)))
         active_lanes = data.get("active_lanes")
-        self.active_lanes = set(active_lanes) if active_lanes else set(range(MAX_LANES))
+        self.active_lanes = set(active_lanes) if active_lanes else set(range(self.lane_count))
         self.auto_sort_shots = data.get("auto_sort_shots", False)
         self._apply_settings_to_view()
 
@@ -4483,7 +4527,7 @@ class MainWindow(QMainWindow):
             shot_start_y = y_of(shot_start)
             placed_lane = None
             for lane_index, occupied_until in enumerate(lane_end_positions):
-                if honor_disabled and _lane_disabled(lane_index, self.active_lanes):
+                if honor_disabled and _lane_disabled(lane_index, self.active_lanes, self.lane_count):
                     continue
                 if (
                     shot_start >= occupied_until
@@ -4499,7 +4543,7 @@ class MainWindow(QMainWindow):
                 # so they keep their fixed visual column but can never be
                 # selected (here or by the "first fit" search above).
                 placed_lane = len(lane_end_positions)
-                while honor_disabled and _lane_disabled(placed_lane, self.active_lanes):
+                while honor_disabled and _lane_disabled(placed_lane, self.active_lanes, self.lane_count):
                     lane_end_positions.append(float("inf"))
                     lane_end_y.append(float("inf"))
                     placed_lane += 1
@@ -4543,7 +4587,7 @@ class MainWindow(QMainWindow):
             start, end, start_y, end_y = info[shot.shot_id]
             lane_index = 0
             while True:
-                if honor_disabled and _lane_disabled(lane_index, self.active_lanes):
+                if honor_disabled and _lane_disabled(lane_index, self.active_lanes, self.lane_count):
                     lane_index += 1
                     continue
                 while len(lanes) <= lane_index:
@@ -4617,19 +4661,26 @@ class MainWindow(QMainWindow):
     def _handle_lane_overflow(self, needed_lanes: int):
         box = QMessageBox(self)
         box.setWindowTitle("Too Many Overlapping Shots")
-        box.setText(
+        text = (
             f"This section of the script needs {needed_lanes} lanes to show "
             "every overlapping shot as a separate line, more than fit at the "
             "current size. Do you want to continue with the lines overlapping, "
             "or make all the lines smaller so more can fit side by side?"
         )
+        if needed_lanes > MAX_LANE_COUNT:
+            text += (
+                f"\n\nThe smallest size fits {MAX_LANE_COUNT} lanes, so the "
+                f"other {needed_lanes - MAX_LANE_COUNT} would still overlap - "
+                "drawing the extras over the text avoids that."
+            )
+        box.setText(text)
         continue_btn = box.addButton("Continue with Overlap", QMessageBox.RejectRole)
         smaller_btn = box.addButton("Make Lines Smaller", QMessageBox.AcceptRole)
         overlay_btn = box.addButton("Draw Extra Lines Over the Text", QMessageBox.ActionRole)
         box.setDefaultButton(smaller_btn)
         box.exec()
         if box.clickedButton() is smaller_btn:
-            self.script_view.set_lane_capacity(needed_lanes)
+            self.script_view.set_lane_capacity(min(needed_lanes, MAX_LANE_COUNT))
         elif box.clickedButton() is overlay_btn:
             self._move_overflow_shots_over_text()
 
@@ -4826,7 +4877,10 @@ class MainWindow(QMainWindow):
             QTextCursor(doc).insertText(self.script_view.toPlainText())
 
         lane_start_x = round(LANE_START_X * scale)
-        lane_width = max(MIN_LANE_WIDTH, round(LANE_WIDTH * scale))
+        # The on-screen view's line size (which "Make Lines Smaller" and the
+        # lane count both change), not the default - otherwise the PDF
+        # would pack lanes differently from what was on screen.
+        lane_width = max(MIN_LANE_WIDTH, round(self.script_view.base_lane_width * scale))
         cross_size = max(3, round(CROSS_SIZE * scale))
         line_width = max(1, round(2 * scale))
         left_margin_px = round(1.5 * px_per_inch)

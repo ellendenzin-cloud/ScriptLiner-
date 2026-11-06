@@ -164,6 +164,11 @@ def fetch_latest_release(timeout: float = 8.0) -> Optional[ReleaseInfo]:
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
+        if exc.code in (403, 429):
+            raise UpdateError(
+                f"GitHub is limiting requests from this network right now ({exc.code}) - "
+                "try again in a little while."
+            )
         raise UpdateError(f"GitHub answered with an error ({exc.code}).")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         raise UpdateError(_describe_network_error("Couldn't reach GitHub", exc))

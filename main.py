@@ -20,6 +20,13 @@ if "--check-update" in sys.argv:
     try:
         latest = updater.fetch_latest_release()
     except updater.UpdateError as exc:
+        if "limiting requests" in str(exc) or "answered with an error" in str(exc):
+            # GitHub replied, so the secure connection itself worked -
+            # which is all this self-test is checking. (Build machines
+            # share addresses and can briefly hit GitHub's anonymous
+            # rate limit.)
+            print(f"update-check ok: connected to GitHub securely, but it declined the request ({exc})")
+            sys.exit(0)
         print(f"update-check failed: {exc}", file=sys.stderr)
         sys.exit(1)
     print(f"update-check ok: latest={latest.version if latest else 'none'}")

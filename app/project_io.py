@@ -35,6 +35,7 @@ def project_to_dict(window) -> dict:
         "length_sort_shots": window.length_sort_shots,
         "label_every_segment": window.label_every_segment,
         "overlay_default_opacity": window.overlay_default_opacity,
+        "lines_over_text": window.lines_over_text,
         "shot_type_style_map": window.shot_type_style_map,
         "shot_type_affects_style": window.shot_type_affects_style,
         "key_enabled": window.key_enabled,

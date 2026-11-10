@@ -2848,6 +2848,12 @@ class MainWindow(QMainWindow):
         self.unique_shot_colors = False  # every new shot gets a color nothing else uses yet
         self.label_every_segment = True  # shot number above every section of a split shot
         self.overlay_default_opacity = DEFAULT_OVERLAY_OPACITY
+        # "Draw all lines over the text" (Settings > Shot Lines): every
+        # shot is drawn semi-transparent over the script instead of in the
+        # side margin, and so is every new one. It's applied to the shots
+        # themselves (see _apply_lines_over_text), so any one can still be
+        # moved back to the margin from the Inspector afterward.
+        self.lines_over_text = False
 
         # Dark Mode is a personal display preference, not a project
         # attribute - it's loaded from/saved to QSettings (like keyboard
@@ -3379,7 +3385,10 @@ class MainWindow(QMainWindow):
         dialog = SettingsDialog(self, self)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             before = self._lane_setup()
+            over_text_before = self.lines_over_text
             dialog.apply_to_window()
+            if self.lines_over_text != over_text_before:
+                self._apply_lines_over_text(self.lines_over_text)
             if self.lane_count != before[2]:
                 self._fit_lane_width_to_count(before[2])
             self._apply_settings_to_view()
@@ -3391,6 +3400,26 @@ class MainWindow(QMainWindow):
             # lines silently stacked on top of each other.
             if self._lane_setup() != before:
                 self._check_lane_overflow(None)
+
+    def _apply_lines_over_text(self, on):
+        """Moves every existing shot's line over the text (at the default
+        opacity from Settings, keeping a custom one a shot already had) or
+        back into the margin. Undoable."""
+        if not self.shots:
+            return
+        self._push_undo()
+        for shot in self.shots:
+            if on and not shot.overlay:
+                shot.overlay = True
+                shot.overlay_opacity = self.overlay_default_opacity
+            elif not on:
+                shot.overlay = False
+            # A line changing between margin and text drops any manual lane.
+            self.pinned_lanes.discard(shot.shot_id)
+            self.manual_lanes.pop(shot.shot_id, None)
+        self.update_highlights()
+        if self.selected_shot is not None:
+            self.inspector.set_shot(self.selected_shot)
 
     def _lane_setup(self):
         return (
@@ -3594,6 +3623,7 @@ class MainWindow(QMainWindow):
         self.length_sort_shots = bool(data.get("length_sort_shots", False))
         self.label_every_segment = bool(data.get("label_every_segment", True))
         self.overlay_default_opacity = int(data.get("overlay_default_opacity") or DEFAULT_OVERLAY_OPACITY)
+        self.lines_over_text = bool(data.get("lines_over_text", False))
 
         self.shot_type_style_map = data.get("shot_type_style_map") or {
             st: "solid" for st in ShotInspectorPanel.SHOT_TYPES if st
@@ -4179,6 +4209,8 @@ class MainWindow(QMainWindow):
             text=selected_text,
             color=color,
             tick_shape=self._shape_for_color(color),
+            overlay=self.lines_over_text,
+            overlay_opacity=self.overlay_default_opacity,
         )
 
         self.shots.append(shot)
@@ -4312,6 +4344,8 @@ class MainWindow(QMainWindow):
                 text=self.script_view.toPlainText()[rendered_start:rendered_end],
                 color=color,
                 tick_shape=self._shape_for_color(color),
+                overlay=self.lines_over_text,
+                overlay_opacity=self.overlay_default_opacity,
                 line_style=source.line_style if "line_style" in fields else "solid",
                 shot_type=source.shot_type if "shot_type" in fields else "",
                 lens=source.lens if "lens" in fields else "",

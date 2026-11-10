@@ -1,4 +1,4 @@
-APP_VERSION = "0.20"
+APP_VERSION = "0.21"
 
 # GitHub "owner/name" whose Releases the in-app updater (app/updater.py)
 # checks. Must be readable without a login, since testers' copies carry

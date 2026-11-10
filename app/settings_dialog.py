@@ -318,8 +318,16 @@ class SettingsDialog(QDialog):
         self.label_every_segment_check.setChecked(getattr(window, "label_every_segment", True))
         lines_layout.addWidget(self.label_every_segment_check)
 
+        self.lines_over_text_check = QCheckBox(
+            "Draw all lines over the text (semi-transparent) instead of in the side margin\n"
+            "(applies to every shot now and every new one; a shot can still be put back "
+            "in the margin from the Inspector)"
+        )
+        self.lines_over_text_check.setChecked(getattr(window, "lines_over_text", False))
+        lines_layout.addWidget(self.lines_over_text_check)
+
         opacity_row = QHBoxLayout()
-        opacity_row.addWidget(QLabel("Opacity for new lines drawn over the text:"))
+        opacity_row.addWidget(QLabel("Opacity for lines drawn over the text:"))
         self.overlay_opacity_spin = QSpinBox()
         self.overlay_opacity_spin.setRange(10, 100)
         self.overlay_opacity_spin.setSingleStep(5)
@@ -628,6 +636,7 @@ class SettingsDialog(QDialog):
         w.length_sort_shots = self.length_sort_check.isChecked()
         w.label_every_segment = self.label_every_segment_check.isChecked()
         w.overlay_default_opacity = self.overlay_opacity_spin.value()
+        w.lines_over_text = self.lines_over_text_check.isChecked()
         w.unique_shot_colors = self.unique_colors_check.isChecked()
         w.colors = list(self._colors)
 

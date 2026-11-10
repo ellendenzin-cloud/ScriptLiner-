@@ -1028,22 +1028,160 @@ def _draw_page_note(painter, text, x_left, bottom_y, max_width, ink, backdrop=No
     smaller than the script text, with its bottom edge at `bottom_y`. A
     translucent `backdrop` keeps it readable when it crosses other shots'
     lines in the margin. Returns the note's top edge."""
-    base = painter.font()
-    note_font = QFont(base)
-    point_size = base.pointSizeF()
-    if point_size > 0:
-        note_font.setPointSizeF(max(5.0, point_size * 0.75))
     painter.save()
+    note_font, flags, box = _page_note_layout(painter, text, x_left, bottom_y, max_width)
     painter.setFont(note_font)
-    flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
-    bounds = painter.fontMetrics().boundingRect(QRect(0, 0, max(1, int(max_width)), 100000), flags, text)
-    box = QRectF(x_left, bottom_y - bounds.height(), max_width, bounds.height())
     if backdrop is not None:
         painter.fillRect(box.adjusted(-2, -1, 2, 1), backdrop)
     painter.setPen(ink)
     painter.drawText(box, flags, text)
     painter.restore()
     return box.top()
+
+
+def _page_note_layout(painter, text, x_left, bottom_y, max_width):
+    """(font, text flags, box) for a page note - the box is only as wide as
+    the wrapped text actually is, so its backdrop hides as little of the
+    other shots' lines as possible."""
+    base = painter.font()
+    note_font = QFont(base)
+    point_size = base.pointSizeF()
+    if point_size > 0:
+        note_font.setPointSizeF(max(5.0, point_size * 0.75))
+    flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
+    painter.save()
+    painter.setFont(note_font)
+    bounds = painter.fontMetrics().boundingRect(QRect(0, 0, max(1, int(max_width)), 100000), flags, text)
+    painter.restore()
+    width = min(float(max_width), bounds.width() + 2.0)
+    return note_font, flags, QRectF(x_left, bottom_y - bounds.height(), width, bounds.height())
+
+
+class _MarkLayer:
+    """Collects every shot's tick marks and number labels while the lines
+    are drawn, then paints them all on top, each inside its own opaque
+    page-colored box ("bounding box"). Without this, a later shot's line
+    ran straight through an earlier shot's tick or number, and the numbers
+    of neighbouring lanes landed on top of one another.
+
+    - A margin shot's tick/label gets a backdrop that hides whatever other
+      lines run behind it (its own line is redrawn across the tick's box
+      so it isn't cut). A shot drawn over the text gets no backdrop - that
+      would hide the script - but is still kept clear of other labels.
+    - A label that would overlap another label or another shot's tick is
+      moved up until it is clear."""
+
+    def __init__(self):
+        self.ticks = []
+        self.labels = []
+
+    def add_tick(self, owner, x, y, size, draw, pen, boxed, stub=None, double=False):
+        """draw(painter) paints the tick; stub=(y0, y1) is the stretch of
+        the shot's own line to redraw across the tick's box."""
+        margin = 1 + size * 0.15  # scales with the tick, so it's right at any resolution
+        rect = QRectF(x - size, y - size, size * 2, size * 2).adjusted(-margin, -margin, margin, margin)
+        self.ticks.append((owner, rect, draw, QPen(pen), boxed, stub, x, double))
+
+    def add_label(self, owner, x, baseline, text, color, boxed, note=None):
+        """note=(text, x_left, max_width, ink, backdrop) is the shot's
+        on-page note, kept above the label wherever the label ends up."""
+        color = QColor(color)
+        if not boxed:
+            # Over the script: the line itself is translucent, but its
+            # number must stay legible - opaque ink on a light backdrop.
+            color.setAlpha(255)
+        self.labels.append([owner, x, baseline, text, color, boxed, note])
+
+    def flush(self, painter, backdrop):
+        if not self.ticks and not self.labels:
+            return
+        metrics = painter.fontMetrics()
+        pad = max(2, metrics.height() // 7)  # scales with the font (the export is 1200 dpi)
+        ascent, descent = metrics.ascent(), metrics.descent()
+        height = ascent + descent + 2 * pad
+        placed = []
+        layouts = []  # per label: (label_rect, note_layout or None)
+
+        def blocker_for(zone, owner):
+            hit = next((r for r in placed if r.intersects(zone)), None)
+            if hit is None:
+                hit = next((t[1] for t in self.ticks if t[0] != owner and t[1].intersects(zone)), None)
+            return hit
+
+        for entry in self.labels:
+            owner, x, baseline, text, note = entry[0], entry[1], float(entry[2]), entry[3], entry[6]
+            width = metrics.horizontalAdvance(text)
+            for _ in range(40):
+                rect = QRectF(x - width / 2 - pad, baseline - ascent - pad, width + 2 * pad, height)
+                # +2px each side so side-by-side numbers aren't touching
+                blocker = blocker_for(rect.adjusted(-pad, 0, pad, 0), owner)
+                if blocker is None:
+                    break
+                baseline -= max(1.0, rect.bottom() - blocker.top() + 1)
+            placed.append(rect)
+            entry[2] = baseline
+            note_layout = None
+            if note is not None:
+                # The note sits above its label, lifted clear of any other
+                # number, tick or note it would otherwise land on.
+                note_bottom = baseline - ascent - pad - 2
+                for _ in range(40):
+                    note_layout = _page_note_layout(painter, note[0], note[1], note_bottom, note[2])
+                    zone = note_layout[2].adjusted(-pad, -pad // 2, pad, pad // 2)
+                    blocker = blocker_for(zone, owner)
+                    if blocker is None:
+                        break
+                    note_bottom -= max(1.0, zone.bottom() - blocker.top() + 1)
+                placed.append(note_layout[2].adjusted(-pad, -pad // 2, pad, pad // 2))
+            layouts.append((rect, note_layout))
+
+        # 1. Notes - underneath, so they never hide another shot's tick or number.
+        for entry, (rect, note_layout) in zip(self.labels, layouts):
+            if note_layout is not None:
+                note = entry[6]
+                note_font, flags, box = note_layout
+                painter.save()
+                painter.setFont(note_font)
+                if note[4] is not None:
+                    painter.fillRect(box.adjusted(-2, -1, 2, 1), note[4])
+                painter.setPen(note[3])
+                painter.drawText(box, flags, note[0])
+                painter.restore()
+
+        # 2. The boxes behind every tick and number.
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(backdrop)
+        for _owner, rect, _draw, _pen, boxed, _stub, _x, _dbl in self.ticks:
+            if boxed:
+                painter.drawRect(rect)
+        for entry, (rect, _note) in zip(self.labels, layouts):
+            if entry[5]:
+                painter.drawRect(rect)
+            else:
+                soft = QColor(backdrop)
+                soft.setAlpha(200)
+                painter.setBrush(soft)
+                painter.drawRect(rect)
+                painter.setBrush(backdrop)
+        painter.setBrush(Qt.NoBrush)
+
+        # 3. The ticks, each shot's own line mended across its box.
+        for _owner, rect, draw, pen, boxed, stub, x, double in self.ticks:
+            painter.setPen(pen)
+            if boxed and stub is not None and stub[1] > stub[0]:
+                painter.drawLine(round(x), round(stub[0]), round(x), round(stub[1]))
+                if double:
+                    painter.drawLine(round(x) + 4, round(stub[0]), round(x) + 4, round(stub[1]))
+            draw(painter)
+        painter.restore()
+
+        # 4. The numbers.
+        painter.save()
+        for entry in self.labels:
+            painter.setPen(entry[4])
+            painter.drawText(round(entry[1] - metrics.horizontalAdvance(entry[3]) // 2), round(entry[2]), entry[3])
+        painter.restore()
 
 
 def _draw_handle_arrows(painter, cx, cy, radius, horizontal):
@@ -2373,6 +2511,7 @@ class ScriptTextEdit(QTextEdit):
         # circle can never end up UNDER another shot's break-zigzag mark
         # just because that shot happened to be drawn later in the loop.
         show_lane_handles = []  # [(x, mid_y, color), ...]
+        mark_layer = _MarkLayer()
 
         for shot, lane in shots_with_lanes:
             x = _shot_line_x(
@@ -2464,28 +2603,37 @@ class ScriptTextEdit(QTextEdit):
                     extra_label_ys.append(top_b - _break_mark_height(fitted_size) - 3)
 
             if first_top is not None:
+                # Ticks and numbers are queued and painted after every
+                # line (see _MarkLayer), each in a page-colored box.
+                boxed = not shot.overlay
+                first_seg = min(segs, key=lambda sg: sg[0])
+                last_seg = max(segs, key=lambda sg: sg[1])
+                reach = cross * 1.2 + 1
                 if not shot.suppress_start_tick:
-                    painter.drawLine(x - cross, first_top + cross, x + cross, first_top - cross)
+                    mark_layer.add_tick(
+                        shot.shot_id, x, first_top, cross,
+                        lambda p, x=x, y=first_top: p.drawLine(x - cross, y + cross, x + cross, y - cross),
+                        pen, boxed, (first_top, min(first_top + reach, first_seg[1])), shot.line_style == "double",
+                    )
                 if last_bottom is not None and not shot.suppress_end_tick:
-                    painter.drawLine(x - cross, last_bottom + cross, x + cross, last_bottom - cross)
+                    mark_layer.add_tick(
+                        shot.shot_id, x, last_bottom, cross,
+                        lambda p, x=x, y=last_bottom: p.drawLine(x - cross, y + cross, x + cross, y - cross),
+                        pen, boxed, (max(last_bottom - reach, last_seg[0]), last_bottom), shot.line_style == "double",
+                    )
 
-                painter.setPen(line_color)
-                metrics = painter.fontMetrics()
-                text_width = metrics.horizontalAdvance(shot.shot_id)
-                label_x = x - (text_width // 2)
                 if not shot.suppress_start_tick:
                     label_y = first_top - cross - 4
-                    painter.drawText(label_x, label_y, shot.shot_id)
                     note = (shot.page_note or "").strip()
+                    note_draw = None
                     if note:
-                        backdrop = QColor(PAGE_DARK_BG if self.dark_page else "#ffffff")
-                        backdrop.setAlpha(215)
-                        _draw_page_note(
-                            painter, note, 3 * self.scale, label_y - metrics.ascent() - 2,
-                            PAGE_MARGIN_LEFT_PX * self.scale - 6 * self.scale, line_color, backdrop,
+                        note_draw = (
+                            note, 3 * self.scale, PAGE_MARGIN_LEFT_PX * self.scale - 6 * self.scale,
+                            QColor(line_color), QColor(PAGE_DARK_BG if self.dark_page else "#ffffff"),
                         )
+                    mark_layer.add_label(shot.shot_id, x, label_y, shot.shot_id, line_color, boxed, note_draw)
                 for label_y in extra_label_ys:
-                    painter.drawText(label_x, round(label_y), shot.shot_id)
+                    mark_layer.add_label(shot.shot_id, x, label_y, shot.shot_id, line_color, boxed)
 
                 if self.show_lanes and last_bottom is not None and not shot.overlay:
                     # Just the center side-to-side handle (not the
@@ -2529,6 +2677,8 @@ class ScriptTextEdit(QTextEdit):
                             mid = (span_lo + span_hi) / 2
 
                     show_lane_handles.append((x, mid, handle_color))
+
+        mark_layer.flush(painter, QColor(PAGE_DARK_BG if self.dark_page else "#ffffff"))
 
         for handle_x, handle_mid, handle_color in show_lane_handles:
             handle_r = max(7, self.cross_size)
@@ -5197,6 +5347,7 @@ class MainWindow(QMainWindow):
                 painter.drawText(round(contd_x), round(contd_y), f"{more_speakers[page_index - 1]} (CONT'D)")
 
             shots_on_page = []
+            mark_layer = _MarkLayer()
             for shot, lane in shots_with_lanes:
                 segs = []
                 for seg_start, seg_end in sorted(shot.all_ranges()):
@@ -5267,10 +5418,18 @@ class MainWindow(QMainWindow):
                 # page that a segment merely continues into.
                 tick_shape = shot.tick_shape if black_and_white else "diagonal"
 
+                boxed = not shot.overlay
+                reach = cross * 1.2 + 1
+                tick_pen = QPen(painter.pen())
+
                 first_top = segs[0][0]
                 draw_label = False
                 if content_start - 0.5 <= first_top <= page_content_bottom + 0.5:
-                    _draw_tick_mark(painter, x, first_top, cross, tick_shape)
+                    mark_layer.add_tick(
+                        shot.shot_id, x, first_top, cross,
+                        lambda p, x=x, y=first_top, sh=tick_shape: _draw_tick_mark(p, x, y, cross, sh),
+                        tick_pen, boxed, (first_top, min(first_top + reach, segs[0][1])), shot.line_style == "double",
+                    )
                     draw_label = True
                 elif first_vis == 0 and first_top < content_start - 0.5:
                     _draw_break_zigzag(painter, x, content_start + mark_height, cross, flip=True)
@@ -5280,7 +5439,11 @@ class MainWindow(QMainWindow):
                 # it runs past the edge of.
                 last_bottom = segs[-1][1]
                 if content_start - 0.5 <= last_bottom <= page_content_bottom + 0.5:
-                    _draw_tick_mark(painter, x, last_bottom, cross, tick_shape)
+                    mark_layer.add_tick(
+                        shot.shot_id, x, last_bottom, cross,
+                        lambda p, x=x, y=last_bottom, sh=tick_shape: _draw_tick_mark(p, x, y, cross, sh),
+                        tick_pen, boxed, (max(last_bottom - reach, segs[-1][0]), last_bottom), shot.line_style == "double",
+                    )
                 elif last_vis == n - 1 and last_bottom > page_content_bottom + 0.5:
                     _draw_break_zigzag(painter, x, page_content_bottom - mark_height, cross)
 
@@ -5288,21 +5451,18 @@ class MainWindow(QMainWindow):
                 # (which also resets the pen width to the default cosmetic
                 # hairline) can't thin out a tick or break mark drawn after.
                 if draw_label or extra_label_ys:
-                    painter.setPen(shot_ink)
-                    metrics = painter.fontMetrics()
-                    text_width = metrics.horizontalAdvance(shot.shot_id)
-                    label_x = x - (text_width // 2)
                     if draw_label:
                         label_y = first_top - cross - 4
-                        painter.drawText(label_x, label_y, shot.shot_id)
                         note = (shot.page_note or "").strip()
+                        note_draw = None
                         if note:
-                            _draw_page_note(
-                                painter, note, 3 * scale, label_y - metrics.ascent() - 2,
-                                left_margin_px - 6 * scale, shot_ink, QColor(255, 255, 255, 215),
-                            )
+                            note_draw = (note, 3 * scale, left_margin_px - 6 * scale, QColor(shot_ink), QColor(255, 255, 255))
+                        mark_layer.add_label(shot.shot_id, x, label_y, shot.shot_id, shot_ink, boxed, note_draw)
                     for label_y in extra_label_ys:
-                        painter.drawText(label_x, round(label_y), shot.shot_id)
+                        mark_layer.add_label(shot.shot_id, x, label_y, shot.shot_id, shot_ink, boxed)
+
+            painter.setFont(base_font)
+            mark_layer.flush(painter, QColor(255, 255, 255))
 
             key_on_this_page = self.key_enabled and (page_index == 0 or self.key_placement == "every_page")
             if key_on_this_page:
